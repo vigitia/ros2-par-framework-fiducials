@@ -1,8 +1,13 @@
 
+# Compatibility with the Logitech Brio node (topic, best-effort QoS, colour encoding) and the parameters for the
+# marker type, dictionary and detector settings added with help of Claude Code
+
 import os
 
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 from sensor_msgs.msg import Image
 
@@ -14,32 +19,75 @@ from custom_interfaces.msg import FiducialsList, Fiducial
 from .fiducials_detector import FiducialsDetector
 
 NODE_NAME = 'fiducials_detector_node'
-TOPIC_NAME_FRAME_FULL = '/camera/generic_webcam_frame_full'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
 QUEUE_SIZE = 10
 
+# Camera frames are published best-effort (see logitech_brio). A reliable subscriber would be QoS-incompatible and
+# silently receive nothing, while a best-effort one also connects to reliable publishers. Only the newest frame
+# matters, detecting on an old one would publish outdated marker positions.
+FRAME_QOS = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                       history=QoSHistoryPolicy.KEEP_LAST, depth=1)
+
+PARAMETER_TOPIC_NAME_FRAME = 'topic_name_frame'
+PARAMETER_MARKER_TYPE = 'marker_type'
+PARAMETER_DICTIONARY = 'dictionary'
+PARAMETER_CORNER_REFINEMENT = 'corner_refinement'
+PARAMETER_ADAPTIVE_THRESH_CONSTANT = 'adaptive_thresh_constant'
+
 
 class FiducialsDetectorNode(Node):
+    # Co-authored by Claude Code
     def __init__(self):
         super().__init__(node_name=NODE_NAME)
         self.get_logger().info('Hello from FiducialsDetectorNode')
         self.get_logger().info(os.getcwd())
 
+        self.__declare_parameters()
+
         self.cv_bridge = CvBridge()
 
+        self.fiducials_detector = FiducialsDetector(
+            self,
+            marker_type=self.get_parameter(PARAMETER_MARKER_TYPE).value,
+            dictionary=self.get_parameter(PARAMETER_DICTIONARY).value,
+            corner_refinement=self.get_parameter(PARAMETER_CORNER_REFINEMENT).value,
+            adaptive_thresh_constant=self.get_parameter(PARAMETER_ADAPTIVE_THRESH_CONSTANT).value)
+
         self.create_subscription(msg_type=Image,
-                                 topic=TOPIC_NAME_FRAME_FULL,
+                                 topic=self.get_parameter(PARAMETER_TOPIC_NAME_FRAME).value,
                                  callback=self.listener_callback,
-                                 qos_profile=QUEUE_SIZE)
+                                 qos_profile=FRAME_QOS)
 
         self.publisher = self.create_publisher(msg_type=FiducialsList,
                                                topic=TOPIC_NAME_FIDUCIALS,
                                                qos_profile=QUEUE_SIZE)
 
-        self.fiducials_detector = FiducialsDetector(self)
+    # Written with the help of Claude Code
+    def __declare_parameters(self):
+        # All read-only because the subscription and the detector are created once at startup, a later change
+        # would have no effect
+        self.declare_parameter(PARAMETER_TOPIC_NAME_FRAME, '/camera/brio/image_raw', ParameterDescriptor(
+            description='Image topic to detect fiducials in.', read_only=True))
+        self.declare_parameter(PARAMETER_MARKER_TYPE, 'aruco', ParameterDescriptor(
+            description='Type of markers to detect: aruco or apriltag.', read_only=True))
+        self.declare_parameter(PARAMETER_DICTIONARY, '', ParameterDescriptor(
+            description='Marker dictionary without the DICT_ / DICT_APRILTAG_ prefix, e.g. 4X4_100 or 6X6_250 for '
+                        'aruco, 16h5 or 36h11 for apriltag. Empty uses 4X4_100 / 36h11.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_CORNER_REFINEMENT, 'none', ParameterDescriptor(
+            description='Corner refinement: none, subpix, contour or apriltag. Refinement makes corners more '
+                        'precise at the cost of detection time.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_ADAPTIVE_THRESH_CONSTANT, 7.0, ParameterDescriptor(
+            description='Constant subtracted in the adaptive thresholding (OpenCV default 7). Tune it if markers '
+                        'are missed under the projector light.',
+            read_only=True))
 
+    # Co-authored by Claude Code
     def listener_callback(self, data):
-        current_frame = self.cv_bridge.imgmsg_to_cv2(data)  # Convert ROS Image message to OpenCV image
+        # Detection works on greyscale. Asking cv_bridge for mono8 converts bgr8, rgb8 and mono8 frames correctly,
+        # whichever encoding the camera node is set to
+        current_frame = self.cv_bridge.imgmsg_to_cv2(data, desired_encoding='mono8')
         # self.get_logger().info(str(current_frame.shape))
 
         fiducials: list = self.fiducials_detector.detect_fiducials(current_frame)

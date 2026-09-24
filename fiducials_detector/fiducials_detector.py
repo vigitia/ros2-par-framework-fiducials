@@ -1,3 +1,6 @@
+# Choice between ArUco markers and AprilTags, the dictionary and detector settings as constructor arguments
+# added with help of Claude Code
+
 import math
 
 import cv2
@@ -6,26 +9,50 @@ import numpy as np
 
 from .fiducials_detector_debugger import FiducialsDetectorDebugger
 
-ADAPTIVE_THRESH_CONSTANT = 10  # TODO: Find best value
-
-# TODO: Add settings option to switch between aruco markers and apriltags
-# ARUCO_DICT = aruco.DICT_4X4_50
-ARUCO_DICT = aruco.DICT_4X4_100
-# ARUCO_DICT = aruco.DICT_APRILTAG_16H5
-# ARUCO_DICT = aruco.DICT_5X5_50
-# ARUCO_DICT = aruco.DICT_5X5_50
-# ARUCO_DICT = aruco.DICT_6X6_50
+# Prefix of the cv2.aruco dictionary constants per marker type, e.g. DICT_4X4_100 or DICT_APRILTAG_36h11
+DICTIONARY_PREFIXES = {
+    'aruco': 'DICT_',
+    'apriltag': 'DICT_APRILTAG_',
+}
+# Used when no dictionary is given, so switching the marker type alone gives a working detector
+DEFAULT_DICTIONARIES = {
+    'aruco': '4X4_100',
+    'apriltag': '36h11',
+}
+CORNER_REFINEMENTS = {
+    'none': aruco.CORNER_REFINE_NONE,
+    'subpix': aruco.CORNER_REFINE_SUBPIX,
+    'contour': aruco.CORNER_REFINE_CONTOUR,
+    'apriltag': aruco.CORNER_REFINE_APRILTAG,
+}
 
 DEBUG_MODE = False
 
 # Currently supporting Aruco Markers and Apriltags
 class FiducialsDetector:
 
-    def __init__(self, node=None):
+    # Co-authored by Claude Code
+    def __init__(self, node=None, marker_type='aruco', dictionary='', corner_refinement='none',
+                 adaptive_thresh_constant=7.0):
         self.node = node
-        self.aruco_dictionary = aruco.getPredefinedDictionary(ARUCO_DICT)
+
+        if marker_type not in DICTIONARY_PREFIXES:
+            raise ValueError(f'marker_type must be one of {list(DICTIONARY_PREFIXES)}, got {marker_type!r}')
+        if corner_refinement not in CORNER_REFINEMENTS:
+            raise ValueError(f'corner_refinement must be one of {list(CORNER_REFINEMENTS)}, '
+                             f'got {corner_refinement!r}')
+
+        prefix = DICTIONARY_PREFIXES[marker_type]
+        dictionary = dictionary or DEFAULT_DICTIONARIES[marker_type]
+        dictionary_id = getattr(aruco, prefix + dictionary, None)
+        if dictionary_id is None:
+            valid = [name[len(prefix):] for name in dir(aruco) if name.startswith(prefix)]
+            raise ValueError(f'Unknown {marker_type} dictionary {dictionary!r}, valid are {valid}')
+
+        self.aruco_dictionary = aruco.getPredefinedDictionary(dictionary_id)
         self.aruco_detector_parameters = aruco.DetectorParameters()
-        # TODO: Add options to change more parameters here to improve detection results
+        self.aruco_detector_parameters.cornerRefinementMethod = CORNER_REFINEMENTS[corner_refinement]
+        self.aruco_detector_parameters.adaptiveThreshConstant = adaptive_thresh_constant
 
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dictionary, self.aruco_detector_parameters)
 
