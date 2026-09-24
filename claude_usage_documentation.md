@@ -65,3 +65,11 @@ Built on the host (`/opt/ros/lyrical` + `.venv`, `colcon build --packages-up-to 
   callback, even at 640×480, so part of the gap is transport, not the node.
 - `colcon test` runs 0 tests on this host (it falls back to unittest), so the lint tests were run
   with `python -m pytest test/` directly: flake8 fails on the older code only, pep257 passes.
+
+## OpenCV from opencv-contrib-python
+
+**What changed:** `requirements.txt` pins `opencv-contrib-python==4.11.0.86` instead of `opencv-python==4.11.0.86`.
+
+**Why:** framework-wide switch, because `mediapipe` (hand_landmarks node) depends on the contrib build and both
+distributions install into the same `cv2/` directory, silently shadowing each other. Same OpenCV version, so this
+node's behaviour does not change. Full reasoning in `ros2-par-framework/claude_usage_documentation.md`.
