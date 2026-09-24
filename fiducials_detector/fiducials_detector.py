@@ -1,5 +1,5 @@
-# Choice between ArUco markers and AprilTags, the dictionary and detector settings as constructor arguments
-# added with help of Claude Code
+# Choice between ArUco markers and AprilTags, the dictionary and detector settings as
+# constructor arguments added with help of Claude Code
 
 import math
 
@@ -9,7 +9,8 @@ import numpy as np
 
 from .fiducials_detector_debugger import FiducialsDetectorDebugger
 
-# Prefix of the cv2.aruco dictionary constants per marker type, e.g. DICT_4X4_100 or DICT_APRILTAG_36h11
+# Prefix of the cv2.aruco dictionary constants per marker type, e.g. DICT_4X4_100 or
+# DICT_APRILTAG_36h11
 DICTIONARY_PREFIXES = {
     'aruco': 'DICT_',
     'apriltag': 'DICT_APRILTAG_',
@@ -37,7 +38,8 @@ class FiducialsDetector:
         self.node = node
 
         if marker_type not in DICTIONARY_PREFIXES:
-            raise ValueError(f'marker_type must be one of {list(DICTIONARY_PREFIXES)}, got {marker_type!r}')
+            raise ValueError(f'marker_type must be one of {list(DICTIONARY_PREFIXES)}, '
+                             f'got {marker_type!r}')
         if corner_refinement not in CORNER_REFINEMENTS:
             raise ValueError(f'corner_refinement must be one of {list(CORNER_REFINEMENTS)}, '
                              f'got {corner_refinement!r}')
@@ -51,8 +53,9 @@ class FiducialsDetector:
 
         self.aruco_dictionary = aruco.getPredefinedDictionary(dictionary_id)
         self.aruco_detector_parameters = aruco.DetectorParameters()
-        self.aruco_detector_parameters.cornerRefinementMethod = CORNER_REFINEMENTS[corner_refinement]
-        self.aruco_detector_parameters.adaptiveThreshConstant = adaptive_thresh_constant
+        parameters = self.aruco_detector_parameters
+        parameters.cornerRefinementMethod = CORNER_REFINEMENTS[corner_refinement]
+        parameters.adaptiveThreshConstant = adaptive_thresh_constant
 
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dictionary, self.aruco_detector_parameters)
 

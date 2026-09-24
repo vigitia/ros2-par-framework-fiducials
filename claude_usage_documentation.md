@@ -36,3 +36,32 @@
   parameter callback that rebuilds the detector was possible, but nothing needs it yet.
 - **`adaptive_thresh_constant` defaults to 7.0**, the OpenCV default and the value actually in
   effect before. The old constant 10 was never applied.
+
+## 2026-09-24 — Publish empty fiducial lists
+
+### What changed
+`listener_callback` publishes a `FiducialsList` for every frame, also when no marker was found.
+Before, it published only when at least one marker was detected.
+
+### Why / alternatives
+Without the empty message, a subscriber can't tell a marker was removed: its last position
+stayed valid forever. The alternative was a timeout on the subscriber side, which every consumer
+would have to reimplement and tune. Publishing every frame costs one small message per camera frame.
+
+## 2026-09-24 — Built and tested; lint fixes for the new code
+
+### What changed
+Rewrapped the lines added above to flake8's 99 characters and moved the new `rcl_interfaces`
+import before `rclpy` (alphabetical order). The 15 remaining flake8 errors are all in older code
+and were left as they were.
+
+### Tested
+Built on the host (`/opt/ros/lyrical` + `.venv`, `colcon build --packages-up-to fiducials_detector`).
+- Stub publisher standing in for the Brio (best-effort, depth 1, `rgb8`, 1920×1080): the marker
+  image gave ids `[9, 11, 10, 7]`, blank frames gave empty lists.
+- Real Brio with `bringup/config/par_setup.yaml`: the node receives its frames
+  (`frame_id: brio_optical_frame`) and publishes `/fiducials` at about 21 Hz while the Brio captures at
+  60 fps. Processing a 1080p frame takes 20–35 ms. Many best-effort frames are also lost before the
+  callback, even at 640×480, so part of the gap is transport, not the node.
+- `colcon test` runs 0 tests on this host (it falls back to unittest), so the lint tests were run
+  with `python -m pytest test/` directly: flake8 fails on the older code only, pep257 passes.
