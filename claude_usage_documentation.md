@@ -73,3 +73,20 @@ Built on the host (`/opt/ros/lyrical` + `.venv`, `colcon build --packages-up-to 
 **Why:** framework-wide switch, because `mediapipe` (hand_landmarks node) depends on the contrib build and both
 distributions install into the same `cv2/` directory, silently shadowing each other. Same OpenCV version, so this
 node's behaviour does not change. Full reasoning in `ros2-par-framework/claude_usage_documentation.md`.
+
+### Clean shutdown on Ctrl-C / launch shutdown (2026-09-25)
+
+**What:** `main()` catches `KeyboardInterrupt` and `ExternalShutdownException` around `rclpy.spin()`. It also
+swallows other exceptions once `rclpy.ok()` is false, and ends with `rclpy.try_shutdown()`. This is the same pattern
+as `hand_landmarks`.
+
+**Why:** when a launch ends (e.g. `projection_calibration_kinect.launch.py` after the calibrator finishes), each node
+gets SIGINT. Before, this node died with a traceback: `fiducials_detector` from the uncaught `KeyboardInterrupt`,
+`object_detector` from the race where a callback still publishes after the context is shut down
+(`RCLError: publisher's context is invalid`). Errors while the context is still valid are still re-raised, so real
+bugs keep surfacing.
+- Alternative: a shared helper for all nodes. Rejected: each node is its own repo, and a shared package only for
+  this would be a new dependency.
+
+**Tested:** `par_framework_kinect.launch.py` live, stopped with SIGINT after 60 s: all nine processes report
+"finished cleanly", with no traceback.
