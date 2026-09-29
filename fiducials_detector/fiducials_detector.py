@@ -29,6 +29,80 @@ CORNER_REFINEMENTS = {
 
 DEBUG_MODE = False
 
+# Following lines until corners_to_camera_space written by Claude Code
+# The depth of a marker is taken from its inner part only: the polygon shrunk towards its centre to
+# this fraction. Pixels at the edge may already see what lies around the marker.
+INNER_FRACTION = 0.7
+# Fewer valid depth pixels than this in the inner part: no 3D position, e.g. a marker far away
+MIN_DEPTH_PIXELS = 20
+# Less of the inner part with depth than this: no 3D position. Seen live on a cube's side face that
+# the depth camera saw almost edge-on: 13 % valid pixels, and those were the table behind it.
+MIN_DEPTH_COVERAGE = 0.5
+# A square of edge 1 in solvePnP's IPPE_SQUARE order, which is also OpenCV's marker corner order
+# (clockwise from the top left). The real size comes from the depth, so no marker size is needed.
+UNIT_SQUARE = np.array([[-0.5, 0.5, 0.0], [0.5, 0.5, 0.0], [0.5, -0.5, 0.0], [-0.5, -0.5, 0.0]])
+# A pose that misses the corners by more than this is discarded: they are not the image of a square
+# (e.g. a wrong detection). Also IPPE's one degenerate case, a noise-free square facing the camera
+# exactly, which only synthetic data produces.
+MAX_REPROJECTION_ERROR_PX = 3.0
+
+
+def corners_to_camera_space(corners, depth_m, k, d):
+    """
+    Return the four corners of a marker in the camera's optical frame, in metres, or None.
+
+    corners: 4x2 pixel positions in the raw colour image. depth_m: depth image registered to that
+    image (the same pixel grid), in metres, 0 where there is no depth. k, d: camera matrix and
+    distortion coefficients of the colour image.
+
+    The orientation comes from the marker's square in the colour image (IPPE), the distance from
+    the depth inside it. The depth alone gave steep faces a wrong tilt: on a cube's side face 10
+    degrees too steep, a 60 x 77 mm "square" for a 57 mm marker, probably because the
+    time-of-flight light also reaches the face via the table in the corner between them
+    (multipath). The result is a square that lies on the corners' rays. Returns a 4x3 array; None
+    when too little of the marker has depth, or the corners are no view of a square.
+    """
+    corners = np.asarray(corners, np.float64).reshape(4, 2)
+    center = corners.mean(axis=0)
+    inner = center + INNER_FRACTION * (corners - center)
+    # Mask only the bounding box, not the whole image, for every marker in every frame
+    height, width = depth_m.shape[:2]
+    u0, v0 = np.maximum(np.floor(inner.min(axis=0)).astype(int), 0)
+    u1, v1 = np.minimum(np.ceil(inner.max(axis=0)).astype(int) + 1, (width, height))
+    if u0 >= u1 or v0 >= v1:
+        return None
+    box = depth_m[v0:v1, u0:u1]
+    mask = np.zeros(box.shape, np.uint8)
+    cv2.fillConvexPoly(mask, np.round(inner - (u0, v0)).astype(np.int32), 1)
+    v, u = np.nonzero((mask > 0) & (box > 0))
+    if u.size < MIN_DEPTH_PIXELS or u.size < MIN_DEPTH_COVERAGE * np.count_nonzero(mask):
+        return None
+
+    # A square seen at an angle is ambiguous: IPPE returns both tilts that fit the image
+    found, rvecs, tvecs, errors = cv2.solvePnPGeneric(UNIT_SQUARE, corners, k, d,
+                                                      flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    poses = [(cv2.Rodrigues(rvec)[0], tvec.ravel())
+             for rvec, tvec, error in zip(rvecs, tvecs, errors)
+             if error.ravel()[0] <= MAX_REPROJECTION_ERROR_PX]
+    if not found or not poses:
+        return None
+    # The depth's tilt is not exact, but good enough to tell the two apart: its plane's normal is
+    # the direction of least spread of the depth points
+    z = box[v, u].astype(np.float64)
+    normalized = cv2.undistortPoints(np.column_stack([u + u0, v + v0]).astype(np.float64)
+                                     .reshape(-1, 1, 2), k, d).reshape(-1, 2)
+    points = np.column_stack([normalized * z[:, None], z])
+    depth_normal = np.linalg.svd(points - points.mean(axis=0))[2][2]
+    # The square lies in its own xy plane, so the rotation's third column is its normal
+    rotation, translation = max(poses, key=lambda pose: abs(pose[0][:, 2] @ depth_normal))
+    unit_corners = UNIT_SQUARE @ rotation.T + translation
+    # Scaled about the camera, every corner stays on its ray. The median depth of the inner part
+    # is the depth of the marker's centre; a finger on part of the marker does not move it.
+    scale = np.median(z) / unit_corners.mean(axis=0)[2]
+    if not (np.isfinite(scale) and scale > 0):
+        return None
+    return unit_corners * scale
+
 # Currently supporting Aruco Markers and Apriltags
 class FiducialsDetector:
 

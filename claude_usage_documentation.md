@@ -90,3 +90,65 @@ bugs keep surfacing.
 
 **Tested:** `par_framework_kinect.launch.py` live, stopped with SIGINT after 60 s: all nine processes report
 "finished cleanly", with no traceback.
+
+### 3D marker corners from a registered depth image (2026-09-25)
+
+**What:**
+- **`fiducials_detector.py`:** new module function `corners_to_camera_space(corners, depth_m, k, d)`.
+  - It takes the valid depth pixels inside the marker polygon, shrunk to 70 % towards the centre, and makes them 3D
+    points (undistorted rays times depth).
+  - It fits a plane (SVD), drops points more than 1 cm off it (e.g. a finger on the marker), and fits again.
+  - Result: the four corners' rays intersected with the plane, as a 4x3 array in metres in the optical frame. None
+    with fewer than 20 valid pixels, or when a ray does not meet the plane in front of the camera.
+  - The mask is built on the bounding box only.
+- **`fiducials_detector_node.py`:**
+  - new read-only parameter `use_depth` (default false);
+  - with it: colour and depth pairs (`ApproximateTimeSynchronizer`), `camera_info` (Brio name, remapped by the Kinect
+    launch), `corners_3d` per marker, the same missing-depth warning as `hand_landmarks` (resolved topic name), and a
+    size check against the colour image;
+  - without it: unchanged. `listener_callback` gets an optional depth image.
+- **`package.xml`:** `geometry_msgs` and `message_filters` declared.
+- **`test/test_corners_to_camera_space.py`** (new): flat marker, marker tilted by 30°, a finger 4 cm in front of the
+  marker, too little depth.
+
+**Why:** your request, markers in 3D in RViz like the hands.
+- **Plane fit instead of a window per corner (your choice):** a marker is flat. Hundreds of pixels from the inner
+  area are robust against holes and edge pixels, and the corners need no depth of their own. A window around a corner
+  would be only a quarter marker, and four independent depths can bend the square.
+- **Unchanged:** the pixel fields, so the projector calibration is unaffected.
+
+**Tested:** `pytest` 4/4. My first tilted test wrongly assumed a square in 3D: a square in pixels on a tilted plane is
+a trapezoid, so it now checks the exact ray-plane intersection. `ament_flake8` has no new findings compared to HEAD.
+Live test pending.
+
+### Orientation from the image (IPPE), distance from the depth (2026-09-25)
+
+**What:** `corners_to_camera_space` no longer uses the depth plane for the orientation.
+- **Coverage:** at least 50 % of the inner area must have depth (`MIN_DEPTH_COVERAGE`).
+- **Orientation:** `cv2.solvePnPGeneric` with `SOLVEPNP_IPPE_SQUARE` for a square of edge 1 (`UNIT_SQUARE`). Of its
+  two solutions, only those with at most 3 px reprojection error (`MAX_REPROJECTION_ERROR_PX`) count, and the one
+  whose normal is closest to the depth plane's normal wins.
+- **Distance:** the median depth of the inner area divided by the unit solution's distance gives the scale. Scaling
+  about the camera origin keeps every corner on its ray.
+- **Removed:** the plane refit (`MAX_PLANE_DISTANCE_M`), the square check (`MAX_SQUARE_RATIO`) and `_fit_plane`. The
+  result is a square by construction.
+- **Tests:** the pixel-square flat test and the "no square" test are gone. New: a marker facing the camera (1°), the
+  wrong depth tilt (depth plane at 40°, marker at 30°), a kite (no view of a square gives None); the finger test now
+  uses a real 1° square.
+
+**Why:** live on your cube (marker edge 5.7 cm), the depth plane showed steep side faces 10° too steep: #5 became
+60 x 77 mm with 100 % depth coverage, most likely ToF multipath in the corner between face and table. Marker #6 had
+13 % coverage, and those pixels were the table.
+- **Your choice:** orientation from the image, distance from the depth.
+- **Alternatives:** keep only strict rejection (#5 would have had no 3D), or loosen the square check (#5 visibly
+  stretched).
+- IPPE's degenerate case (a noise-free square facing the camera exactly) only occurs in synthetic data: at 0.01° or
+  with 0.3 px corner noise, the error was below 0.25 px. The 3 px limit catches it anyway.
+
+**Tested:**
+- `pytest` 7/7; `ament_flake8` has no new findings compared to HEAD.
+- Live, with a second node next to your launch:
+  - #2: 57.9 mm (57.3-58.1);
+  - #5: 59.2 mm, viewing angle 50° (the depth plane had said 61°);
+  - angle between the faces #2/#5: 90° (89-90°);
+  - #6 (no depth) correctly without 3D.
