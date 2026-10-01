@@ -152,3 +152,13 @@ Live test pending.
   - #5: 59.2 mm, viewing angle 50° (the depth plane had said 61°);
   - angle between the faces #2/#5: 90° (89-90°);
   - #6 (no depth) correctly without 3D.
+
+### Camera topics renamed to the PAR framework's neutral interface (2026-10-01)
+
+**What:** the camera topics are `/camera/image_raw` (object_detector: `/camera/image_raw/compressed`),
+`/camera/camera_info` and, with depth, `/camera/depth_registered/image_raw`, instead of the Brio's
+`/camera/brio/...` and the Azure Kinect's `/depth_to_rgb/image_raw`.
+
+**Why:** the framework's launch files now remap every camera driver onto these names
+(`launch_helpers.DRIVER_REMAPPINGS` in ros2-par-framework), instead of remapping every consumer onto the Brio's names.
+Run outside the framework, remap the camera's topics onto these names or set `topic_name_frame`.

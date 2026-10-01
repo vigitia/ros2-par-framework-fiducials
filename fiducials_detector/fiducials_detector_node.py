@@ -28,10 +28,11 @@ NODE_NAME = 'fiducials_detector_node'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
 QUEUE_SIZE = 10
 # Following lines until FRAME_QOS written by Claude Code
-# Depth registered to the colour image (Azure Kinect driver), and the colour camera's intrinsics
-# (the Kinect launch files remap the Brio's name to the Kinect's)
-TOPIC_NAME_FRAME_DEPTH = '/depth_to_rgb/image_raw'
-TOPIC_NAME_CAMERA_INFO = '/camera/brio/camera_info'
+# The PAR framework's camera topics, onto which its launch files remap every camera driver: depth
+# registered to the colour image (a depth camera such as the Azure Kinect), and the colour
+# camera's intrinsics
+TOPIC_NAME_FRAME_DEPTH = '/camera/depth_registered/image_raw'
+TOPIC_NAME_CAMERA_INFO = '/camera/camera_info'
 SYNC_LEEWAY_TIME_SEC = 0.01
 # With use_depth, frames are only processed in pairs with a depth frame. Colour frames arriving
 # without any depth for this long means no depth camera: nothing is published, which the node
@@ -106,7 +107,7 @@ class FiducialsDetectorNode(Node):
         # All read-only because the subscription and the detector are created once at startup, a
         # later change would have no effect
         self.declare_parameter(
-            PARAMETER_TOPIC_NAME_FRAME, '/camera/brio/image_raw', ParameterDescriptor(
+            PARAMETER_TOPIC_NAME_FRAME, '/camera/image_raw', ParameterDescriptor(
                 description='Image topic to detect fiducials in.', read_only=True))
         self.declare_parameter(PARAMETER_MARKER_TYPE, 'aruco', ParameterDescriptor(
             description='Type of markers to detect: aruco or apriltag.', read_only=True))
