@@ -162,3 +162,18 @@ Live test pending.
 **Why:** the framework's launch files now remap every camera driver onto these names
 (`launch_helpers.DRIVER_REMAPPINGS` in ros2-par-framework), instead of remapping every consumer onto the Brio's names.
 Run outside the framework, remap the camera's topics onto these names or set `topic_name_frame`.
+
+## 2026-10-13 — `corners_to_camera_space`: reduced SVD
+
+- **What:** the plane fit over the depth points inside a marker calls `np.linalg.svd(..., full_matrices=False)`.
+- **Why:** only the 3x3 `Vt` is used, but the default full SVD also builds `U`, an N x N matrix for the N depth pixels
+  of the marker. Its cost grows with the square of the marker's pixel count: negligible for small markers, but for
+  markers that are large in the image (e.g. projected calibration markers on a high-resolution projector) it took
+  seconds per marker. With `use_depth`, colour and depth frames are kept one deep, so frames arriving during such a
+  slow callback overwrite each other, pairs of the same capture rarely meet, and `/fiducials` was published only
+  sporadically. The result is identical; the reduced SVD runs in milliseconds.
+- **Alternatives:** the eigenvectors of the 3x3 covariance matrix (`np.linalg.eigh`): equally fast, but a second way
+  of writing the same plane fit; the other depth plane fits of the framework (`object_detector`,
+  `camera_pose_calibrator`) already use the reduced SVD. Subsampling the depth pixels: rejected, it trades accuracy
+  for speed while the full-matrix cost was the only problem. Deeper subscription queues: not needed once the callback
+  is fast, and they would add latency.

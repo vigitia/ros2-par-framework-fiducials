@@ -92,7 +92,9 @@ def corners_to_camera_space(corners, depth_m, k, d):
     normalized = cv2.undistortPoints(np.column_stack([u + u0, v + v0]).astype(np.float64)
                                      .reshape(-1, 1, 2), k, d).reshape(-1, 2)
     points = np.column_stack([normalized * z[:, None], z])
-    depth_normal = np.linalg.svd(points - points.mean(axis=0))[2][2]
+    # Only Vt (3x3) is needed. The full SVD would also build U, N x N for the N depth pixels: for a
+    # marker that is large in the image, gigabytes and seconds per marker
+    depth_normal = np.linalg.svd(points - points.mean(axis=0), full_matrices=False)[2][2]
     # The square lies in its own xy plane, so the rotation's third column is its normal
     rotation, translation = max(poses, key=lambda pose: abs(pose[0][:, 2] @ depth_normal))
     unit_corners = UNIT_SQUARE @ rotation.T + translation
