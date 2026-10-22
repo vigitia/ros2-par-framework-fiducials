@@ -19,7 +19,7 @@ from sensor_msgs.msg import CameraInfo, Image
 
 from cv_bridge import CvBridge
 
-from custom_interfaces.msg import FiducialsList, Fiducial
+from par_framework_interfaces.msg import FiducialsList, Fiducial
 
 
 from .fiducials_detector import corners_to_camera_space, FiducialsDetector
