@@ -1,5 +1,5 @@
 
-# Compatibility with the Logitech Brio node (topic, best-effort QoS, colour encoding) and the
+# Compatibility with the camera drivers (topic, best-effort QoS, colour encoding) and the
 # parameters for the marker type, dictionary and detector settings added with help of Claude Code.
 # Claude Code also added the optional depth input (use_depth) that fills corners_3d.
 
@@ -28,9 +28,10 @@ NODE_NAME = 'fiducials_detector_node'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
 QUEUE_SIZE = 10
 # Following lines until FRAME_QOS written by Claude Code
-# The PAR framework's camera topics, onto which its launch files remap every camera driver: depth
-# registered to the colour image (a depth camera such as the Azure Kinect), and the colour
-# camera's intrinsics
+# The PAR framework's camera topics, onto which its launch files remap every camera driver: the
+# colour image, depth registered to it (from a depth camera), and the colour
+# camera's intrinsics. Another topic is chosen by remapping.
+TOPIC_NAME_FRAME = '/camera/image_raw'
 TOPIC_NAME_FRAME_DEPTH = '/camera/depth_registered/image_raw'
 TOPIC_NAME_CAMERA_INFO = '/camera/camera_info'
 SYNC_LEEWAY_TIME_SEC = 0.01
@@ -39,14 +40,13 @@ SYNC_LEEWAY_TIME_SEC = 0.01
 # then says.
 DEPTH_MISSING_SEC = 2.0
 
-# Camera frames are published best-effort (see logitech_brio). A reliable subscriber would be
+# Camera drivers may publish frames best-effort. A reliable subscriber would be
 # QoS-incompatible and silently receive nothing, while a best-effort one also connects to reliable
 # publishers. Only the newest frame matters, detecting on an old one would publish outdated marker
 # positions.
 FRAME_QOS = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
                        history=QoSHistoryPolicy.KEEP_LAST, depth=1)
 
-PARAMETER_TOPIC_NAME_FRAME = 'topic_name_frame'
 PARAMETER_MARKER_TYPE = 'marker_type'
 PARAMETER_DICTIONARY = 'dictionary'
 PARAMETER_CORNER_REFINEMENT = 'corner_refinement'
@@ -74,9 +74,7 @@ class FiducialsDetectorNode(Node):
 
         self.camera_info = None
         if self.get_parameter(PARAMETER_USE_DEPTH).value:
-            frame_subscriber = Subscriber(self, Image,
-                                          self.get_parameter(PARAMETER_TOPIC_NAME_FRAME).value,
-                                          qos_profile=FRAME_QOS)
+            frame_subscriber = Subscriber(self, Image, TOPIC_NAME_FRAME, qos_profile=FRAME_QOS)
             depth_subscriber = Subscriber(self, Image, TOPIC_NAME_FRAME_DEPTH,
                                           qos_profile=FRAME_QOS)
             self.synchronizer = ApproximateTimeSynchronizer([frame_subscriber, depth_subscriber],
@@ -94,7 +92,7 @@ class FiducialsDetectorNode(Node):
                                      FRAME_QOS)
         else:
             self.create_subscription(msg_type=Image,
-                                     topic=self.get_parameter(PARAMETER_TOPIC_NAME_FRAME).value,
+                                     topic=TOPIC_NAME_FRAME,
                                      callback=self.listener_callback,
                                      qos_profile=FRAME_QOS)
 
@@ -106,9 +104,6 @@ class FiducialsDetectorNode(Node):
     def __declare_parameters(self):
         # All read-only because the subscription and the detector are created once at startup, a
         # later change would have no effect
-        self.declare_parameter(
-            PARAMETER_TOPIC_NAME_FRAME, '/camera/image_raw', ParameterDescriptor(
-                description='Image topic to detect fiducials in.', read_only=True))
         self.declare_parameter(PARAMETER_MARKER_TYPE, 'aruco', ParameterDescriptor(
             description='Type of markers to detect: aruco or apriltag.', read_only=True))
         self.declare_parameter(PARAMETER_DICTIONARY, '', ParameterDescriptor(
@@ -126,7 +121,7 @@ class FiducialsDetectorNode(Node):
             read_only=True))
         self.declare_parameter(PARAMETER_USE_DEPTH, False, ParameterDescriptor(
             description=f'Also subscribe to {TOPIC_NAME_FRAME_DEPTH} (depth registered to the '
-                        f'colour image, e.g. from the Azure Kinect) and fill each marker\'s '
+                        f"colour image, from a depth camera) and fill each marker's "
                         f'corners_3d, in metres in the optical frame.',
             read_only=True))
 
@@ -147,7 +142,7 @@ class FiducialsDetectorNode(Node):
     # Written by Claude Code
     def check_depth_arrives(self):
         now = time.monotonic()
-        # Not before DEPTH_MISSING_SEC of colour frames: the Kinect driver only starts computing
+        # Not before DEPTH_MISSING_SEC of colour frames: a driver may only start computing
         # registered depth once it sees a subscriber
         frames_arrive = (self.last_frame_time is not None
                          and now - self.last_frame_time < DEPTH_MISSING_SEC

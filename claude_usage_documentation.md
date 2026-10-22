@@ -177,3 +177,19 @@ Run outside the framework, remap the camera's topics onto these names or set `to
   `camera_pose_calibrator`) already use the reduced SVD. Subsampling the depth pixels: rejected, it trades accuracy
   for speed while the full-matrix cost was the only problem. Deeper subscription queues: not needed once the callback
   is fast, and they would add latency.
+
+## 2026-10-22: `topic_name_frame` removed
+
+**What changed:** the node subscribes to the constant `TOPIC_NAME_FRAME` (`/camera/image_raw`), next to the depth and camera_info topics; the `topic_name_frame` parameter is gone.
+
+**Why:** remapping is ROS 2's way to choose another topic and covers every topic; nothing set the parameter. Reasoning for the whole framework in the framework repo's log.
+
+**Alternatives:** keeping the parameter: rejected, it duplicated remapping for one topic only, and a compressed topic name would have subscribed with the wrong message type.
+
+## 2026-10-22: comments and descriptions no longer name camera models
+
+**What changed:** the file header, the comments on the camera topics, the QoS and the depth start-up, and the `use_depth` description describe camera behaviour in general terms (drivers that publish best-effort, a depth camera, a driver that only computes registered depth once it sees a subscriber) instead of naming the Brio or the Azure Kinect. The `use_depth` description uses double quotes instead of an escaped apostrophe, which also clears flake8's Q003.
+
+**Why:** the node only sees the framework's neutral `/camera/...` topics and does not know which camera runs; a reason tied to one model reads as if the code only applied to it.
+
+**Alternatives:** keeping the model as an example: rejected, the node should not suggest knowledge of the connected camera.
