@@ -61,7 +61,7 @@ class FiducialsDetectorNode(Node):
         self.get_logger().info('Hello from FiducialsDetectorNode')
         self.get_logger().info(os.getcwd())
 
-        self.__declare_parameters()
+        self._declare_parameters()
 
         self.cv_bridge = CvBridge()
 
@@ -101,7 +101,7 @@ class FiducialsDetectorNode(Node):
                                                qos_profile=QUEUE_SIZE)
 
     # Written with the help of Claude Code
-    def __declare_parameters(self):
+    def _declare_parameters(self):
         # All read-only because the subscription and the detector are created once at startup, a
         # later change would have no effect
         self.declare_parameter(PARAMETER_MARKER_TYPE, 'aruco', ParameterDescriptor(

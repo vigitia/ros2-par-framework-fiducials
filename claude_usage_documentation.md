@@ -193,3 +193,9 @@ Run outside the framework, remap the camera's topics onto these names or set `to
 **Why:** the node only sees the framework's neutral `/camera/...` topics and does not know which camera runs; a reason tied to one model reads as if the code only applied to it.
 
 **Alternatives:** keeping the model as an example: rejected, the node should not suggest knowledge of the connected camera.
+
+## 2026-10-23: private methods with one underscore instead of two
+
+**What changed:** methods named `__method` are `_method`, with their calls; behaviour is unchanged. Methods in hand-written files that changed carry a `Co-authored by Claude Code` marker.
+
+**Why:** one underscore is Python's convention for "private"; two trigger name mangling, which only helps against name clashes in subclasses, and none of these classes is subclassed. Each new name was checked against the file's other names and against `rclpy.node.Node`'s members first. Reasoning in the framework repo's log.
