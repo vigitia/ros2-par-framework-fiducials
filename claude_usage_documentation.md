@@ -199,3 +199,80 @@ Run outside the framework, remap the camera's topics onto these names or set `to
 **What changed:** methods named `__method` are `_method`, with their calls; behaviour is unchanged. Methods in hand-written files that changed carry a `Co-authored by Claude Code` marker.
 
 **Why:** one underscore is Python's convention for "private"; two trigger name mangling, which only helps against name clashes in subclasses, and none of these classes is subclassed. Each new name was checked against the file's other names and against `rclpy.node.Node`'s members first. Reasoning in the framework repo's log.
+
+## 2026-10-27: optional compressed input (`use_compressed`)
+
+**What changed:** with `use_compressed`, the node subscribes to `/camera/image_raw/compressed`
+(`sensor_msgs/CompressedImage`) instead of `/camera/image_raw` and decodes each JPEG with
+`cv2.imdecode(..., IMREAD_GRAYSCALE)`. The message type is chosen once and used for both the plain and the
+`use_depth` subscription, as in `object_detector`. The check that the depth image is on the colour image's pixel
+grid moved from `listener_callback_with_depth` into `listener_callback`, after decoding, because `CompressedImage`
+has no width and height. A frame that cannot be decoded is skipped with a throttled warning.
+
+**Why:** a camera driver that passes its JPEGs through then needs no decode for this node, a raw frame is many times
+larger than its JPEG to transfer, and decoding straight to greyscale skips the colour channels the detector never
+uses. The greyscale from the JPEG's brightness channel differs from cv_bridge's colour-to-mono conversion only by
+rounding.
+
+**Alternatives:** a separate callback for compressed frames (rejected: two copies of the detection path; the
+`isinstance` branch keeps one, like `object_detector`); rejecting `use_compressed` together with `use_depth`
+(rejected: message_filters synchronises `CompressedImage` like `Image`, so the combination costs nothing).
+
+## 2026-10-27: names say what they hold, with units
+
+**What changed:** constants, functions, methods and variables in all three modules are renamed after the naming
+rules: units in names (`_px`, `_m`, `_deg`, `_sec`), no single letters or generic words, a verb for functions,
+and a leading underscore for methods only used inside their class. Notable ones: `corners_to_camera_space` is
+`compute_corners_in_camera_space(corners_px, depth_image_m, camera_matrix, distortion_coefficients)`, the node's
+callbacks are `_on_frame_received` / `_on_frame_and_depth_received`, `convert_to_fiducials_interface_msg` is
+`_create_fiducials_list_msg`, the `FiducialsDetector` constructor takes `ros_node` and `dictionary_name`,
+`FiducialsDetectorDebugger` is `DetectionAccuracyDebugger`, and `DEPTH_MISSING_SEC` is `DEPTH_MISSING_TIMEOUT_SEC`.
+Index loops over the detected markers and pose candidates became `zip` loops; the message dictionary keys
+(`corners`, `centroid`, ...) and the ROS parameter names are unchanged.
+
+**Why:** the names must be readable on their own, e.g. in a traceback or a grep, and the 3D corner code mixes
+pixels and metres.
+
+**Checked:** the committed and the renamed module give identical detections (ids, angles, corners, centroids) on a
+rendered image and identical 3D corners for a flat and a tilted square on synthetic depth; the node starts with and
+without `use_depth`. Nothing outside this repository used the renamed names.
+
+## 2026-10-27: detector without ROS node, debugger counters per instance
+
+**What changed:**
+- `FiducialsDetector` no longer takes a ROS node. `detect_fiducials` only detects; drawing the markers in a window
+  moved into the module's `__main__` block, which now takes the image path as argument
+  (`python -m fiducials_detector.fiducials_detector <image path>`), because the image it read does not exist.
+- `DetectionAccuracyDebugger` sets its counters in `__init__` instead of as class attributes, and its prints start
+  with `[DetectionAccuracyDebugger]: `.
+- `detect_fiducials` checks `marker_ids is not None` instead of `np.all(marker_ids is not None)`.
+- The node no longer logs a greeting and the working directory at startup.
+
+**Why:** the node was passed only so that a missing node could open a window that blocks on `cv2.waitKey(0)`;
+detection logic stays free of ROS objects, as the framework's node convention asks. Class attributes are shared by
+all instances, so a list in one debugger showed up in every other one, and the interval started at import instead
+of at creation. The `np.all` around a single boolean did nothing. The startup lines carried no information.
+
+**Alternatives:** keeping a `show_detections` flag in the constructor (rejected: nothing but the standalone test
+uses it, and a window inside a node callback would block it).
+
+## 2026-10-27: node split into one method per step, depth arrival monitor as a class
+
+**What changed:** `__init__` delegates the subscriptions to `_create_subscriptions` (the name the other
+nodes use), which leaves the depth pairing to `_create_frame_and_depth_subscriptions`; `_on_frame_received` calls `_decode_frame_mono`, `_get_depth_image_on_frame_grid`,
+the detector and `_add_corners_3d` in turn. The three "does depth arrive" timestamps and their condition moved into
+`DepthArrivalMonitor` in `fiducials_detector.py` (no ROS, testable with plain pytest); the node only feeds it
+times and logs the warning. `_create_fiducials_list_msg` unpacks the corners into keyword arguments and takes a
+required header. Timer period, warning throttle and the millimetre factor are named constants; the log messages no
+longer repeat the node name (the logger adds it); imports are one sorted block; the commented-out debug line and the
+per-block AI markers are gone (one note at the top, one marker per method).
+
+**Why:** both methods did several things inline, and the monitor's state existed only in depth mode, spread over
+three callbacks.
+
+**Checked:** the old and the new message creation give equal messages; the monitor gives the old condition's answer
+at every step of several frame/depth timelines; a synthetic two-marker frame through the node gives the same
+`/fiducials` raw and as JPEG; the node starts in depth mode.
+
+**Alternatives:** keeping the monitor in the node with a docstring (rejected: its state and condition are plain
+logic, which the node convention puts outside the node).
