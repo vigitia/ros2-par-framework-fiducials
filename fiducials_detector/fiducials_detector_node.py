@@ -1,7 +1,8 @@
 # Co-authored by Claude Code. Claude Code added the compatibility with the camera drivers
 # (topics, best-effort QoS, colour encoding), the parameters for the marker type, dictionary and
-# detector settings, the optional depth input (use_depth) that fills corners_3d, the optional
-# compressed input (use_compressed), and split the node into one method per step.
+# detector settings (including the threshold window sizes), the optional depth input (use_depth)
+# that fills corners_3d, the optional compressed input (use_compressed), and split the node into
+# one method per step.
 
 import time
 
@@ -54,6 +55,8 @@ PARAMETER_MARKER_TYPE = 'marker_type'
 PARAMETER_DICTIONARY = 'dictionary'
 PARAMETER_CORNER_REFINEMENT = 'corner_refinement'
 PARAMETER_ADAPTIVE_THRESH_CONSTANT = 'adaptive_thresh_constant'
+PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX = 'adaptive_thresh_win_size_min_px'
+PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX = 'adaptive_thresh_win_size_max_px'
 PARAMETER_USE_DEPTH = 'use_depth'
 PARAMETER_USE_COMPRESSED = 'use_compressed'
 PARAMETER_DEBUG = 'debug'
@@ -72,6 +75,10 @@ class FiducialsDetectorNode(Node):
             dictionary_name=self.get_parameter(PARAMETER_DICTIONARY).value,
             corner_refinement=self.get_parameter(PARAMETER_CORNER_REFINEMENT).value,
             adaptive_thresh_constant=self.get_parameter(PARAMETER_ADAPTIVE_THRESH_CONSTANT).value,
+            adaptive_thresh_win_size_min_px=self.get_parameter(
+                PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX).value,
+            adaptive_thresh_win_size_max_px=self.get_parameter(
+                PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX).value,
             debug=self.get_parameter(PARAMETER_DEBUG).value)
 
         self.camera_info = None
@@ -99,6 +106,16 @@ class FiducialsDetectorNode(Node):
         self.declare_parameter(PARAMETER_ADAPTIVE_THRESH_CONSTANT, 7.0, ParameterDescriptor(
             description='Constant subtracted in the adaptive thresholding (OpenCV default 7). '
                         'Tune it if markers are missed under the projector light.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX, 3, ParameterDescriptor(
+            description='Smallest adaptive threshold window in pixels (OpenCV default 3, at '
+                        'least 3). The frame is thresholded and searched once per window, from '
+                        'min to max in steps of 10.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX, 23, ParameterDescriptor(
+            description='Largest adaptive threshold window in pixels (OpenCV default 23). '
+                        'min = max thresholds once: faster, if that window suits the size of '
+                        'the markers in the image.',
             read_only=True))
         self.declare_parameter(PARAMETER_USE_DEPTH, False, ParameterDescriptor(
             description=f'Also subscribe to {TOPIC_NAME_FRAME_DEPTH} (depth registered to the '

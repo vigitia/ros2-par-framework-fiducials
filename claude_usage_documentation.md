@@ -323,3 +323,24 @@ under a hand or during fast motion.
 **Alternatives:** keeping the overall line next to the list (rejected: with one marker it says the same, with several
 it is the misleading number); listing every id of the dictionary (rejected: only the markers seen in the interval
 matter, the others would be 0 % noise).
+
+## 2026-10-28: adaptive threshold window sizes as parameters
+
+**What changed:** two read-only parameters, `adaptive_thresh_win_size_min_px` and `adaptive_thresh_win_size_max_px`
+(OpenCV defaults 3 and 23), passed to `FiducialsDetector` and from there to the ArUco detector. Values OpenCV would
+reject (min below 3, max below min) raise a `ValueError` when the detector is created.
+
+**Why:** the detector thresholds every frame once per window size (3, 13 and 23 px by default) and searches each
+result for markers. On full-HD camera frames detection was the larger part of the node's time per frame, so the node
+processed fewer frames than the camera delivered. Windows much smaller than the markers in the image only produce
+noise; a single window that suits the marker size detected noticeably faster in a benchmark on recorded frames, with
+the same markers and identical corners. The right size depends on how large the markers appear, so it is a per-setup
+parameter, not a new default.
+
+**Alternatives:**
+- *ArUco3 detection (`useAruco3Detection`)*: lost markers on the recorded frames and was not faster. Rejected.
+- *A larger `minMarkerPerimeterRate`*: no measurable effect. Rejected.
+- *Decoding the JPEG at half size* (`IMREAD_REDUCED_GRAYSCALE_2`): faster, but coarser corners; rejected for now in
+  favour of keeping the full resolution.
+- *Decoding and detecting in parallel threads*: raises the frame rate the node keeps up with, but not the time per
+  frame, and adds threading to the node. Left as the next step if needed.

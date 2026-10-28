@@ -1,6 +1,7 @@
-# Choice between ArUco markers and AprilTags, the dictionary and detector settings as
-# constructor arguments added with help of Claude Code. Claude Code also renamed constants,
-# functions and variables so their names say what they hold, with units.
+# Choice between ArUco markers and AprilTags, the dictionary and detector settings (including the
+# adaptive threshold window sizes) as constructor arguments added with help of Claude Code.
+# Claude Code also renamed constants, functions and variables so their names say what they hold,
+# with units.
 
 import math
 
@@ -21,6 +22,8 @@ DEFAULT_MARKER_DICTIONARIES = {
     'aruco': '4X4_100',
     'apriltag': '36h11',
 }
+# OpenCV rejects adaptive threshold windows smaller than this
+MIN_ADAPTIVE_THRESH_WIN_SIZE_PX = 3
 CORNER_REFINEMENT_METHODS = {
     'none': aruco.CORNER_REFINE_NONE,
     'subpix': aruco.CORNER_REFINE_SUBPIX,
@@ -170,7 +173,8 @@ class FiducialsDetector:
 
     # Co-authored by Claude Code
     def __init__(self, marker_type='aruco', dictionary_name='', corner_refinement='none',
-                 adaptive_thresh_constant=7.0, debug=False):
+                 adaptive_thresh_constant=7.0, adaptive_thresh_win_size_min_px=3,
+                 adaptive_thresh_win_size_max_px=23, debug=False):
         self.debug = debug
         # Whether the preview window got its starting size
         self.preview_window_sized = False
@@ -181,6 +185,16 @@ class FiducialsDetector:
         if corner_refinement not in CORNER_REFINEMENT_METHODS:
             raise ValueError(f'corner_refinement must be one of '
                              f'{list(CORNER_REFINEMENT_METHODS)}, got {corner_refinement!r}')
+        # OpenCV would only fail on these inside the first detectMarkers call, with an assertion
+        if adaptive_thresh_win_size_min_px < MIN_ADAPTIVE_THRESH_WIN_SIZE_PX:
+            raise ValueError(f'adaptive_thresh_win_size_min_px must be at least '
+                             f'{MIN_ADAPTIVE_THRESH_WIN_SIZE_PX}, got '
+                             f'{adaptive_thresh_win_size_min_px}')
+        if adaptive_thresh_win_size_max_px < adaptive_thresh_win_size_min_px:
+            raise ValueError(f'adaptive_thresh_win_size_max_px '
+                             f'({adaptive_thresh_win_size_max_px}) must not be smaller than '
+                             f'adaptive_thresh_win_size_min_px '
+                             f'({adaptive_thresh_win_size_min_px})')
 
         dictionary_prefix = MARKER_DICTIONARY_PREFIXES[marker_type]
         dictionary_name = dictionary_name or DEFAULT_MARKER_DICTIONARIES[marker_type]
@@ -196,6 +210,11 @@ class FiducialsDetector:
         detector_parameters = self.aruco_detector_parameters
         detector_parameters.cornerRefinementMethod = CORNER_REFINEMENT_METHODS[corner_refinement]
         detector_parameters.adaptiveThreshConstant = adaptive_thresh_constant
+        # The image is thresholded once per window size from min to max (step 10 px) and searched
+        # for markers each time: fewer windows are faster, and windows much smaller than the
+        # markers in the image only add noise
+        detector_parameters.adaptiveThreshWinSizeMin = adaptive_thresh_win_size_min_px
+        detector_parameters.adaptiveThreshWinSizeMax = adaptive_thresh_win_size_max_px
 
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dictionary,
                                                       self.aruco_detector_parameters)
