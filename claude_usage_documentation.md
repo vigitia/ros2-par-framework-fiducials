@@ -276,3 +276,50 @@ at every step of several frame/depth timelines; a synthetic two-marker frame thr
 
 **Alternatives:** keeping the monitor in the node with a docstring (rejected: its state and condition are plain
 logic, which the node convention puts outside the node).
+
+## 2026-10-27: debug mode as a ROS parameter, with a preview window
+
+**What changed:** the module constant `DEBUG_DETECTION_ACCURACY` is replaced by the read-only node parameter `debug`,
+passed to `FiducialsDetector(debug=...)`. With it, every frame is shown in the OpenCV window `fiducials_detector`
+with the detected markers outlined and labelled with their ids, and the detection accuracy is printed as before. The
+`__main__` test uses the same preview instead of drawing on its own, and no longer squeezes the image to 800x600.
+
+**Why:** a constant needed a code change to switch; a parameter can be set per run (`debug:=true`) or in
+`par_setup.yaml`. The name `debug` and the preview (fixed width of 800 px, resizable window sized once, `waitKey(1)`)
+follow `hand_landmarks` and `gesture_detector`, so all nodes switch and look the same. The frame is scaled down before
+drawing, so the preview costs as little detection time as possible.
+
+**Alternatives:** a separate debug image topic for RViz or rqt (rejected: the other nodes use a window, and
+publishing a second image stream costs more than drawing a small one); drawing the rejected marker candidates too
+(left out: not asked for, but useful when tuning `adaptive_thresh_constant`).
+
+## 2026-10-27: detection accuracy printed once per interval
+
+**What changed:** `DetectionAccuracyDebugger.on_new_frame` prints the accuracy of the interval that just ended, once
+per `RESET_INTERVAL_SEC`, instead of a running value for every frame. The check and reset happen before the new frame
+is counted, so a frame and its markers always land in the same interval.
+
+**Why:** with `debug` now a parameter, the debugger runs live at the camera's frame rate, where one line per frame
+floods the terminal.
+
+## 2026-10-27: multiple-markers warning once per interval
+
+**What changed:** `on_new_marker` only collects the ids; `on_new_frame` prints the "multiple markers" warning once per
+interval, after the accuracy line and with the number of ids seen.
+
+**Why:** printed for every marker of every frame, the warning flooded the terminal as soon as a page with four markers
+was in view, and hid the accuracy line it qualifies (with several markers the accuracy exceeds 100 %).
+
+## 2026-10-27: detection rate per marker instead of the multiple-markers warning
+
+**What changed:** `DetectionAccuracyDebugger` counts detections per marker id and prints, once per interval, one
+line with the rate of every marker seen in it, e.g. `Detection rate over 61 frames: id 96: 100 %, id 97: 51 %`, or
+`no markers`. The overall accuracy line and the "multiple markers" warning are gone.
+
+**Why:** the overall count mixed all markers (several in view gave more than 100 %), which is what the warning was
+about. Per marker, the rates stay meaningful with a whole page in view, and show which corner marker drops out, e.g.
+under a hand or during fast motion.
+
+**Alternatives:** keeping the overall line next to the list (rejected: with one marker it says the same, with several
+it is the misleading number); listing every id of the dictionary (rejected: only the markers seen in the interval
+matter, the others would be 0 % noise).

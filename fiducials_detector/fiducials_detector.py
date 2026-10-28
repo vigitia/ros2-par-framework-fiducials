@@ -28,7 +28,10 @@ CORNER_REFINEMENT_METHODS = {
     'apriltag': aruco.CORNER_REFINE_APRILTAG,
 }
 
-DEBUG_DETECTION_ACCURACY = False
+# Debug preview: the frame scaled to this width for every camera (up or down), also the window's
+# starting width; the window can be resized further by dragging
+PREVIEW_WIDTH_PX = 800
+PREVIEW_WINDOW_NAME = 'fiducials_detector'
 
 # Following lines until compute_corners_in_camera_space written by Claude Code
 # The depth of a marker is taken from its inner part only: the polygon shrunk towards its centre to
@@ -167,7 +170,11 @@ class FiducialsDetector:
 
     # Co-authored by Claude Code
     def __init__(self, marker_type='aruco', dictionary_name='', corner_refinement='none',
-                 adaptive_thresh_constant=7.0):
+                 adaptive_thresh_constant=7.0, debug=False):
+        self.debug = debug
+        # Whether the preview window got its starting size
+        self.preview_window_sized = False
+
         if marker_type not in MARKER_DICTIONARY_PREFIXES:
             raise ValueError(f'marker_type must be one of {list(MARKER_DICTIONARY_PREFIXES)}, '
                              f'got {marker_type!r}')
@@ -193,12 +200,12 @@ class FiducialsDetector:
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dictionary,
                                                       self.aruco_detector_parameters)
 
-        if DEBUG_DETECTION_ACCURACY:
+        if self.debug:
             self.detection_accuracy_debugger = DetectionAccuracyDebugger()
 
-    # Co-authored by Claude Code: names
+    # Co-authored by Claude Code: names, debug preview
     def detect_fiducials(self, camera_frame) -> list:
-        if DEBUG_DETECTION_ACCURACY:
+        if self.debug:
             self.detection_accuracy_debugger.on_new_frame()
 
         # Convert RGB frames to greyscale
@@ -219,10 +226,44 @@ class FiducialsDetector:
                     'corners': corners_px[0],
                     'centroid': self._compute_centroid_px(corners_px[0])}
                 fiducials.append(detected_marker)
-                if DEBUG_DETECTION_ACCURACY:
+                if self.debug:
                     self.detection_accuracy_debugger.on_new_marker(detected_marker['id'])
 
+        if self.debug:
+            self._show_preview(camera_frame, marker_corners_px, marker_ids)
+
         return fiducials
+
+    # Written by Claude Code
+    def _show_preview(self, camera_frame_mono, marker_corners_px, marker_ids):
+        """Show the frame with the detected markers outlined and labelled with their ids."""
+        # Scaled down before drawing: drawing on and showing a full camera frame costs detection
+        # time; the same preview width also keeps it readable at every camera resolution
+        frame_height_px, frame_width_px = camera_frame_mono.shape[:2]
+        preview_scale = PREVIEW_WIDTH_PX / frame_width_px
+        preview_height_px = round(frame_height_px * preview_scale)
+        preview_image_mono = cv2.resize(camera_frame_mono, (PREVIEW_WIDTH_PX, preview_height_px))
+        # In colour, so the marker outlines stand out
+        preview_image = cv2.cvtColor(preview_image_mono, cv2.COLOR_GRAY2BGR)
+        if marker_ids is not None:
+            preview_corners_px = []
+            for corners_px in marker_corners_px:
+                scaled_corners_px = corners_px * preview_scale
+                preview_corners_px.append(scaled_corners_px.astype(np.float32))
+            cv2.aruco.drawDetectedMarkers(preview_image, preview_corners_px, marker_ids)
+
+        # Resizable by dragging, keeping the aspect ratio; no Qt toolbar and status bar, which
+        # would take part of the window size below. Does nothing once the window exists.
+        cv2.namedWindow(PREVIEW_WINDOW_NAME,
+                        cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL)
+        # Qt opens such a window small, whatever the image size: set it to the image's, once, so
+        # later frames don't undo a size dragged by hand
+        if not self.preview_window_sized:
+            cv2.resizeWindow(PREVIEW_WINDOW_NAME, PREVIEW_WIDTH_PX, preview_height_px)
+            self.preview_window_sized = True
+        cv2.imshow(PREVIEW_WINDOW_NAME, preview_image)
+        # Lets the window draw itself; returns after 1 ms instead of waiting for a key
+        cv2.waitKey(1)
 
     # Calculate the rotation_diff of an aruco marker relative to the frame.
     # Returns the angle in the range from 0° to 360°
@@ -282,12 +323,8 @@ if __name__ == '__main__':
     test_frame = cv2.imread(sys.argv[1])
     if test_frame is None:
         sys.exit(f'[fiducials_detector]: could not read the image {sys.argv[1]}')
-    test_frame = cv2.resize(test_frame, (800, 600))
-    fiducials_detector = FiducialsDetector()
+    fiducials_detector = FiducialsDetector(debug=True)
     detected_markers = fiducials_detector.detect_fiducials(test_frame)
     print(f'[fiducials_detector]: found ids {[int(marker["id"]) for marker in detected_markers]}')
-    test_frame_corners_px = [marker['corners'][None] for marker in detected_markers]
-    test_frame_ids = np.array([[marker['id']] for marker in detected_markers])
-    cv2.aruco.drawDetectedMarkers(test_frame, test_frame_corners_px, test_frame_ids)
-    cv2.imshow('Detected Aruco Markers', test_frame)
+    # The debug preview is open: keep it until a key is pressed
     cv2.waitKey(0)

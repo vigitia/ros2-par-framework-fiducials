@@ -56,6 +56,7 @@ PARAMETER_CORNER_REFINEMENT = 'corner_refinement'
 PARAMETER_ADAPTIVE_THRESH_CONSTANT = 'adaptive_thresh_constant'
 PARAMETER_USE_DEPTH = 'use_depth'
 PARAMETER_USE_COMPRESSED = 'use_compressed'
+PARAMETER_DEBUG = 'debug'
 
 
 class FiducialsDetectorNode(Node):
@@ -70,7 +71,8 @@ class FiducialsDetectorNode(Node):
             marker_type=self.get_parameter(PARAMETER_MARKER_TYPE).value,
             dictionary_name=self.get_parameter(PARAMETER_DICTIONARY).value,
             corner_refinement=self.get_parameter(PARAMETER_CORNER_REFINEMENT).value,
-            adaptive_thresh_constant=self.get_parameter(PARAMETER_ADAPTIVE_THRESH_CONSTANT).value)
+            adaptive_thresh_constant=self.get_parameter(PARAMETER_ADAPTIVE_THRESH_CONSTANT).value,
+            debug=self.get_parameter(PARAMETER_DEBUG).value)
 
         self.camera_info = None
         self._create_subscriptions()
@@ -108,6 +110,11 @@ class FiducialsDetectorNode(Node):
                         f'(sensor_msgs/CompressedImage, e.g. JPEGs passed through from the '
                         f'camera) instead of {TOPIC_NAME_FRAME}, and decode them straight to '
                         f'greyscale. Only for camera drivers that publish it.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_DEBUG, False, ParameterDescriptor(
+            description='Show the frames with the detected markers in an OpenCV window (needs a '
+                        'display) and print the detection accuracy. Slows detection down a '
+                        'little, so only for testing.',
             read_only=True))
 
     # Written by Claude Code
