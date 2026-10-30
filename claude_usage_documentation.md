@@ -344,3 +344,18 @@ parameter, not a new default.
   favour of keeping the full resolution.
 - *Decoding and detecting in parallel threads*: raises the frame rate the node keeps up with, but not the time per
   frame, and adds threading to the node. Left as the next step if needed.
+
+## 2026-10-28: decoding and detection in parallel threads, tried and reverted
+
+**What was tried:** the frame callback only decoded the frame, and a detection loop in the main thread took the
+newest decoded frame from a one-slot hand-over, so decoding the next frame overlapped detecting the current one.
+Reverted; the node processes each frame serially as before.
+
+**Why reverted:** it raised the rate of processed frames, but not how soon a frame's markers are published, which is
+what makes projected content follow a moving page. A pipeline's delay per frame is still decode + wait + detect: a
+decoded frame waits for the busy detection stage about as long as a raw frame waited for the busy node before.
+Measured live, the age of `/fiducials` did not improve. The threading (a spin thread, a hand-over, error passing
+between threads) was not worth a higher rate alone.
+
+**What would shorten the delay instead:** less work per frame, e.g. searching only near the markers' last positions
+and the whole frame only when they are lost.
