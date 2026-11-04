@@ -1,10 +1,10 @@
 # Co-authored by Claude Code. Claude Code added the compatibility with the camera drivers
 # (topics, best-effort QoS, colour encoding), the parameters for the marker type, dictionary and
 # detector settings (including the threshold window sizes and how the bits are read), the optional
-# depth input (use_depth)
-# that fills corners_3d, the optional compressed input (use_compressed), the optional detection on
-# the mean of several frames (temporal_mean_frame_count), the optional tracking mode
-# (tracking_window_size_px, full_scan_rate_hz), and split the node into one method per step.
+# depth input (use_depth) that fills corners_3d, the optional compressed input (use_compressed),
+# raw frames read from their serialized messages, the optional detection on the mean of several
+# frames (temporal_mean_frame_count), the optional tracking mode (tracking_window_size_px,
+# full_scan_rate_hz), and split the node into one method per step.
 
 import time
 
@@ -19,11 +19,14 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+from std_msgs.msg import Header
 
 from .fiducials_detector import (BackgroundFullScanner, compute_corners_in_camera_space,
                                  DepthArrivalMonitor, FiducialsDetector, FrameMeanBuffer,
                                  MarkerTracker, merge_fiducials_from_mean_image)
+from .serialized_image import read_serialized_image_mono
 
 NODE_NAME = 'fiducials_detector_node'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
@@ -248,6 +251,15 @@ class FiducialsDetectorNode(Node):
         if self.get_parameter(PARAMETER_USE_DEPTH).value:
             self._create_frame_and_depth_subscriptions(frame_msg_type, topic_name_frame)
             return
+        if frame_msg_type is Image:
+            # Serialized: turning a full camera frame into a Python message costs more CPU than
+            # detecting the markers in it, see _on_serialized_frame_received
+            self.create_subscription(msg_type=Image,
+                                     topic=topic_name_frame,
+                                     callback=self._on_serialized_frame_received,
+                                     qos_profile=FRAME_QOS,
+                                     raw=True)
+            return
         self.create_subscription(msg_type=frame_msg_type,
                                  topic=topic_name_frame,
                                  callback=self._on_frame_received,
@@ -315,17 +327,43 @@ class FiducialsDetectorNode(Node):
             depth_image_m = depth_image_m.astype(np.float32) * M_PER_MM
         self._on_frame_received(frame_msg, depth_image_m)
 
+    # Written by Claude Code
+    def _on_serialized_frame_received(self, serialized_frame):
+        """
+        Detect the markers in a frame read straight from its serialized message.
+
+        The pixels are read in place (read_serialized_image_mono), without building a Python
+        Image message. Frames it does not handle (e.g. other encodings) are converted the usual
+        way.
+        """
+        image_fields = read_serialized_image_mono(serialized_frame)
+        if image_fields is None:
+            frame_msg = deserialize_message(serialized_frame, Image)
+            self._on_frame_received(frame_msg)
+            return
+        stamp_sec, stamp_nanosec, frame_id, frame_mono = image_fields
+        frame_header = Header(frame_id=frame_id)
+        frame_header.stamp.sec = stamp_sec
+        frame_header.stamp.nanosec = stamp_nanosec
+        self._detect_and_publish_fiducials(frame_header, frame_mono)
+
     # Co-authored by Claude Code: one method per step
     def _on_frame_received(self, frame_msg, depth_image_m=None):
         """Detect the markers in a raw or compressed frame, with depth (metres) for corners_3d."""
         frame_mono = self._decode_frame_mono(frame_msg)
         if frame_mono is None:
             return
+        self._detect_and_publish_fiducials(frame_msg.header, frame_mono, depth_image_m)
+
+    # Co-authored by Claude Code: split from _on_frame_received, so frames read from their
+    # serialized message take the same steps
+    def _detect_and_publish_fiducials(self, frame_header, frame_mono, depth_image_m=None):
+        """Detect the markers in a greyscale frame and publish them with the frame's header."""
         if depth_image_m is not None:
             depth_image_m = self._get_depth_image_on_frame_grid(depth_image_m, frame_mono)
 
         if self.marker_tracker is not None:
-            fiducials = self._detect_fiducials_with_tracking(frame_mono, frame_msg.header.stamp)
+            fiducials = self._detect_fiducials_with_tracking(frame_mono, frame_header.stamp)
         else:
             fiducials = self.fiducials_detector.detect_fiducials(frame_mono)
         if self.frame_mean_buffer is not None:
@@ -335,7 +373,7 @@ class FiducialsDetectorNode(Node):
 
         # Published for every frame, also without markers: an empty list is how subscribers learn
         # that a marker disappeared, otherwise its last position would stay valid for them forever
-        fiducials_list_msg = self._create_fiducials_list_msg(fiducials, frame_msg.header)
+        fiducials_list_msg = self._create_fiducials_list_msg(fiducials, frame_header)
         self.fiducials_publisher.publish(fiducials_list_msg)
 
     # Written by Claude Code

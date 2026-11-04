@@ -469,3 +469,27 @@ CPU load; applied to every node that only stores the message.
   for its latency.
 - *Downscaled full scans or OpenCV's `useAruco3Detection`*: rejected earlier, markers a few pixels per cell wide are
   not found at a lower resolution.
+
+## 2026-11-04: raw frames read from their serialized messages
+
+**What changed:** Without `use_compressed` and `use_depth`, the node subscribes to `/camera/image_raw` with
+`raw=True`. The new module `serialized_image.py` (no rclpy) reads stamp, `frame_id`, size, encoding and pixels
+straight from the serialized CDR bytes; for `mono8` the frame is a NumPy view of the received buffer, `bgr8` and
+`rgb8` are converted to grey. Anything else (another encoding, another CDR representation, sizes that don't match the
+data) falls back to `deserialize_message` and the existing conversion. Detection and publishing moved into
+`_detect_and_publish_fiducials`, shared by both paths.
+
+**Why:** Measured live with a large mono camera frame at a high frame rate: turning each frame into a Python message
+took far more CPU than receiving it serialized, so the node's main thread was saturated by receiving alone and
+dropped most frames; their wait in the queue was most of the delay from capture to `/fiducials`. Read in place, the
+node keeps up with the camera, and the delay from the frame's stamp to `/fiducials` dropped to a fraction.
+
+**Alternatives:**
+- *A C++ node, or a composable node sharing memory with the driver*: removes the cost completely, but rewrites the
+  node in another language and ties it to C++ drivers; rejected while the Python path keeps up with the camera.
+- *A parameter to switch it on*: rejected, the path is cheaper for every camera, and unhandled frames fall back by
+  themselves.
+- *The depth path*: unchanged, `message_filters` synchronises deserialized messages only.
+- Verified offline against `cv_bridge` for `mono8`, `bgr8` and `rgb8`, with and without padded rows. With padded
+  colour rows, `cv_bridge` itself returned a different image than the rows hold; the new reader takes `step` into
+  account.
