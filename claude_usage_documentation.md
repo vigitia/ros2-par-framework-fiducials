@@ -359,3 +359,70 @@ between threads) was not worth a higher rate alone.
 
 **What would shorten the delay instead:** less work per frame, e.g. searching only near the markers' last positions
 and the whole frame only when they are lost.
+
+## 2026-11-04: detection on the mean of several frames (`temporal_mean_frame_count`)
+
+**What changed:**
+- `fiducials_detector.py`:
+  - `FrameMeanBuffer` keeps a running sum of the last N greyscale frames and returns their mean.
+  - `merge_fiducials_from_mean_image()` returns the frame's markers plus those only the mean image found.
+- `fiducials_detector_node.py`: new read-only parameter `temporal_mean_frame_count`, default 0 (off). With 2 or more,
+  the node also detects on the mean of the last N processed frames, with a second detector without debug, and
+  publishes the merged markers. The detector settings are now built once and shared by both detectors.
+
+**Why:** with a short exposure at high gain (e.g. an IR camera behind a filter, where light is scarce), sensor noise
+makes ArUco miss markers even when they lie still. Averaging frames removes that noise, but a moving marker turns
+into shifted copies in the mean and is lost there. Offline on recorded noisy frames, the frame alone and the mean
+alone each failed in one situation (noise at rest, motion), while their merged markers were the most complete at rest,
+slow and fast. The test on the projector light card ("Handle projector light in detection") has the numbers.
+
+**Decisions and alternatives:**
+- *Frame markers win, mean markers are only added*, because the mean lags behind a moving marker. A mean marker counts
+  as already found when a frame marker with the same id lies within one marker size, so two markers sharing an id in
+  different places (two copies of a page) are both kept. Rejected: merging by id alone, which would drop such copies.
+- *Spatial denoising* (Gaussian, median filter) instead of the mean: lost more markers than the raw frame in the same
+  test, because with few pixels per marker cell, smoothing blurs the cell edges more than it removes noise. Rejected.
+- *Running sum* instead of averaging N frames per call: one addition and one subtraction per frame.
+- *Off by default*: the second detection roughly doubles the work per frame, which costs frame rate on cameras that
+  don't need it.
+- Known limit (marked `Simplification:` in the node): the buffer holds the frames the node processed, not consecutive
+  camera frames, when detection is slower than the camera. At rest that makes no difference to the noise.
+
+## 2026-11-04: tracking mode (`tracking_window_size_px`, `full_scan_rate_hz`)
+
+**What changed:**
+- `fiducials_detector.py`:
+  - `FiducialsDetector.detect_fiducials_in_windows()` detects markers only inside given windows and returns them in
+    frame pixels. Its own OpenCV detector gets the full frame's smallest marker perimeter in pixels
+    (`_get_window_detector`).
+  - `MarkerTracker` keeps each marker's last centroid, velocity and time seen, and returns a search window around
+    each marker's predicted position. Markers unseen for a while are dropped.
+  - `BackgroundFullScanner` searches whole frames in its own thread at a fixed rate, with its own detector, and
+    hands its result to the tracker.
+  - `_is_marker_in_list()` is shared by the mean-image merge and the window de-duplication.
+- `fiducials_detector_node.py`: new read-only parameters `tracking_window_size_px` (0 = off, the default) and
+  `full_scan_rate_hz`. With tracking on, each frame is searched only in the windows; frame times come from the
+  camera stamps. `temporal_mean_frame_count` is ignored while tracking is on. `destroy_node` stops the scanner
+  thread.
+
+**Why:** on a large frame (1920x1200) with small markers, a full search takes tens of milliseconds, so projected
+content following a moving page lagged visibly. The markers cover a tiny part of the frame; searching only near
+them is over ten times faster.
+
+**Decisions and alternatives:**
+- *Full search in a background thread* instead of every Nth frame in the same thread: every Nth frame would take as
+  long as a full search, so the published positions would stutter. OpenCV releases the GIL, so the thread really
+  runs in parallel. Each thread has its own detector, because one detector must not run in two threads at once.
+- *Window detector with the minimum marker size in pixels:* OpenCV's `minMarkerPerimeterRate` is relative to the
+  image size. In a small window it allows tiny contours, and with a noisy camera every speck of noise became a
+  candidate, which made the windows several times slower. Scaling it per window keeps the full frame's limit.
+- *Velocity prediction:* the window is placed where the marker should be now, from its last two sightings, so it
+  can stay small during fast, steady motion. A sudden reversal faster than half a window per frame loses the marker
+  until the next full search.
+- *Comparing scan results with backdated tracks:* a scan result comes from an older frame. Without backdating, a
+  fast marker was added a second time at its old position.
+- *OpenCV's `useAruco3Detection`* was tried as the simpler option: with the marker size here, its downscaled search
+  found no markers, and without downscaling it was not faster. Rejected.
+- *Only the cheaper settings (one threshold window)*: about twice as fast, not enough. Rejected as the only change.
+- Known limits: a new marker appears only after the next full search (up to `1 / full_scan_rate_hz`); the full
+  search still uses several cores.
