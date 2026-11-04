@@ -1,6 +1,7 @@
 # Co-authored by Claude Code. Claude Code added the compatibility with the camera drivers
 # (topics, best-effort QoS, colour encoding), the parameters for the marker type, dictionary and
-# detector settings (including the threshold window sizes), the optional depth input (use_depth)
+# detector settings (including the threshold window sizes and how the bits are read), the optional
+# depth input (use_depth)
 # that fills corners_3d, the optional compressed input (use_compressed), the optional detection on
 # the mean of several frames (temporal_mean_frame_count), the optional tracking mode
 # (tracking_window_size_px, full_scan_rate_hz), and split the node into one method per step.
@@ -59,6 +60,8 @@ PARAMETER_CORNER_REFINEMENT = 'corner_refinement'
 PARAMETER_ADAPTIVE_THRESH_CONSTANT = 'adaptive_thresh_constant'
 PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX = 'adaptive_thresh_win_size_min_px'
 PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX = 'adaptive_thresh_win_size_max_px'
+PARAMETER_BIT_SAMPLE_PX_PER_CELL = 'bit_sample_px_per_cell'
+PARAMETER_BIT_IGNORED_MARGIN_PER_CELL = 'bit_ignored_margin_per_cell'
 PARAMETER_USE_DEPTH = 'use_depth'
 PARAMETER_USE_COMPRESSED = 'use_compressed'
 PARAMETER_DEBUG = 'debug'
@@ -88,6 +91,10 @@ class FiducialsDetectorNode(Node):
                 PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX).value,
             'adaptive_thresh_win_size_max_px': self.get_parameter(
                 PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX).value,
+            'bit_sample_px_per_cell': self.get_parameter(
+                PARAMETER_BIT_SAMPLE_PX_PER_CELL).value,
+            'bit_ignored_margin_per_cell': self.get_parameter(
+                PARAMETER_BIT_IGNORED_MARGIN_PER_CELL).value,
         }
         self.fiducials_detector = FiducialsDetector(
             **detector_settings, debug=self.get_parameter(PARAMETER_DEBUG).value)
@@ -129,6 +136,16 @@ class FiducialsDetectorNode(Node):
             description='Largest adaptive threshold window in pixels (OpenCV default 23). '
                         'min = max thresholds once: faster, if that window suits the size of '
                         'the markers in the image.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_BIT_SAMPLE_PX_PER_CELL, 4, ParameterDescriptor(
+            description='Pixels per marker cell that a candidate square is resampled to before '
+                        'its bits are read (OpenCV default 4). More samples average out sensor '
+                        'noise on markers only a few camera pixels per cell wide.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_BIT_IGNORED_MARGIN_PER_CELL, 0.13, ParameterDescriptor(
+            description='Fraction of each cell ignored at its edges when reading the bits '
+                        '(OpenCV default 0.13, below 0.5). A wider margin skips blurred cell '
+                        'edges; too wide loses markers.',
             read_only=True))
         self.declare_parameter(PARAMETER_USE_DEPTH, False, ParameterDescriptor(
             description=f'Also subscribe to {TOPIC_NAME_FRAME_DEPTH} (depth registered to the '
@@ -181,6 +198,10 @@ class FiducialsDetectorNode(Node):
             raise ValueError(f'{PARAMETER_FULL_SCAN_RATE_HZ} must be positive, got '
                              f'{full_scan_rate_hz}')
         self.marker_tracker = MarkerTracker(search_window_size_px, TRACKING_MAX_UNSEEN_TIME_S)
+        # OpenCV runs one thread for the whole process. The windows are too small to gain from
+        # OpenCV's thread pool, which then costs about twice the CPU time of a single thread, and
+        # the full scan runs in its own thread anyway, where a slower scan costs no latency
+        cv2.setNumThreads(1)
         # Its own detector without debug: one OpenCV detector must not run in two threads, and
         # the preview window belongs to the main thread
         self.full_scanner = BackgroundFullScanner(
@@ -251,14 +272,25 @@ class FiducialsDetectorNode(Node):
         # The name after remapping, which is what the warnings must name
         self.depth_topic_name = depth_subscriber.sub.topic_name
 
-        self.create_subscription(msg_type=CameraInfo,
-                                 topic=TOPIC_NAME_CAMERA_INFO,
-                                 callback=self._on_camera_info,
-                                 qos_profile=FRAME_QOS)
+        self.camera_info_subscription = self.create_subscription(
+            msg_type=CameraInfo,
+            topic=TOPIC_NAME_CAMERA_INFO,
+            callback=self._on_camera_info,
+            qos_profile=FRAME_QOS)
 
     # Written by Claude Code
     def _on_camera_info(self, camera_info_msg):
         self.camera_info = camera_info_msg
+        # Uncalibrated, the camera matrix is all zeros: keep listening until calibrated
+        # intrinsics arrive
+        if camera_info_msg.k[0] == 0.0:
+            return
+        # camera_info comes with every frame, but the intrinsics stay the same while the camera
+        # runs. Simplification: intrinsics stored with set_camera_info while this node runs take
+        # effect only after a restart. Upgrade: subscribe again on a slow timer.
+        self.destroy_subscription(self.camera_info_subscription)
+        self.get_logger().info(f'Calibrated camera info received, no longer subscribed to '
+                               f'{TOPIC_NAME_CAMERA_INFO}')
 
     # Written by Claude Code
     def _on_frame_arrived(self, frame_msg):
