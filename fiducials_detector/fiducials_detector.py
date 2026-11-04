@@ -1,5 +1,6 @@
 # Choice between ArUco markers and AprilTags, the dictionary and detector settings (including the
-# adaptive threshold window sizes) as constructor arguments added with help of Claude Code.
+# adaptive threshold window sizes and how the bits are read) as constructor arguments added with
+# help of Claude Code.
 # Claude Code also renamed constants, functions and variables so their names say what they hold,
 # with units, and added the mean image of several frames (FrameMeanBuffer) whose markers are
 # merged with the frame's, for noisy frames of still markers, and the tracking mode that searches
@@ -414,7 +415,8 @@ class FiducialsDetector:
     # Co-authored by Claude Code
     def __init__(self, marker_type='aruco', dictionary_name='', corner_refinement='none',
                  adaptive_thresh_constant=7.0, adaptive_thresh_win_size_min_px=3,
-                 adaptive_thresh_win_size_max_px=23, debug=False):
+                 adaptive_thresh_win_size_max_px=23, bit_sample_px_per_cell=4,
+                 bit_ignored_margin_per_cell=0.13, debug=False):
         self.debug = debug
         # Whether the preview window got its starting size
         self.preview_window_sized = False
@@ -435,6 +437,13 @@ class FiducialsDetector:
                              f'({adaptive_thresh_win_size_max_px}) must not be smaller than '
                              f'adaptive_thresh_win_size_min_px '
                              f'({adaptive_thresh_win_size_min_px})')
+        if bit_sample_px_per_cell < 1:
+            raise ValueError(f'bit_sample_px_per_cell must be at least 1, got '
+                             f'{bit_sample_px_per_cell}')
+        # Half a cell's margin on both sides would leave nothing of the cell to read
+        if not 0.0 <= bit_ignored_margin_per_cell < 0.5:
+            raise ValueError(f'bit_ignored_margin_per_cell must be in [0, 0.5), got '
+                             f'{bit_ignored_margin_per_cell}')
 
         dictionary_prefix = MARKER_DICTIONARY_PREFIXES[marker_type]
         dictionary_name = dictionary_name or DEFAULT_MARKER_DICTIONARIES[marker_type]
@@ -455,6 +464,12 @@ class FiducialsDetector:
         # markers in the image only add noise
         detector_parameters.adaptiveThreshWinSizeMin = adaptive_thresh_win_size_min_px
         detector_parameters.adaptiveThreshWinSizeMax = adaptive_thresh_win_size_max_px
+        # Each candidate's bits are read from its square resampled to this many pixels per cell,
+        # ignoring this fraction of each cell at its edges. Markers only a few camera pixels per
+        # cell wide are read more reliably from more samples and a wider margin, which average
+        # out sensor noise and blurred cell edges
+        detector_parameters.perspectiveRemovePixelPerCell = bit_sample_px_per_cell
+        detector_parameters.perspectiveRemoveIgnoredMarginPerCell = bit_ignored_margin_per_cell
 
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dictionary,
                                                       self.aruco_detector_parameters)
@@ -462,7 +477,9 @@ class FiducialsDetector:
         # per window, see _get_window_detector
         self.window_detector_parameters = aruco.DetectorParameters()
         for parameter_name in ('cornerRefinementMethod', 'adaptiveThreshConstant',
-                               'adaptiveThreshWinSizeMin', 'adaptiveThreshWinSizeMax'):
+                               'adaptiveThreshWinSizeMin', 'adaptiveThreshWinSizeMax',
+                               'perspectiveRemovePixelPerCell',
+                               'perspectiveRemoveIgnoredMarginPerCell'):
             setattr(self.window_detector_parameters, parameter_name,
                     getattr(detector_parameters, parameter_name))
         self.window_detector = cv2.aruco.ArucoDetector(self.aruco_dictionary,

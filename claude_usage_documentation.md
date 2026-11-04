@@ -426,3 +426,46 @@ them is over ten times faster.
 - *Only the cheaper settings (one threshold window)*: about twice as fast, not enough. Rejected as the only change.
 - Known limits: a new marker appears only after the next full search (up to `1 / full_scan_rate_hz`); the full
   search still uses several cores.
+
+## 2026-11-04: `camera_info` dropped once calibrated
+
+**What changed:** `fiducials_detector_node` (subscribed only with depth) destroys its `/camera/camera_info` subscription as soon as a message with a calibrated
+camera matrix (`k[0] != 0`) has arrived, and logs that. Uncalibrated messages keep the subscription.
+
+**Why:** `camera_info` comes with every camera frame, so at a high frame rate it costs one Python callback per frame,
+yet the intrinsics do not change while the camera runs. Measured first in `demo_app`, where it lowered the node's
+CPU load; applied to every node that only stores the message.
+
+**Alternatives:**
+- *Keep the subscription with a smaller queue*: rejected, rclpy still takes and deserialises every message.
+- *Read the intrinsics from the calibration file*: rejected, some cameras publish factory intrinsics that exist only
+  on the topic.
+- *A shared helper for the pattern*: rejected for now, it would need a ROS-side shared package; the pattern is a few
+  lines per node.
+- Accepted limit (marked `Simplification:`): intrinsics stored with `set_camera_info` while the node runs take effect
+  only after a restart.
+
+## 2026-11-04: bit-reading parameters and one OpenCV thread in tracking mode
+
+**What changed:**
+- New read-only parameters `bit_sample_px_per_cell` and `bit_ignored_margin_per_cell` (OpenCV's
+  `perspectiveRemovePixelPerCell` and `perspectiveRemoveIgnoredMarginPerCell`, defaults unchanged at 4 and 0.13),
+  passed to both the full-frame and the window detector, and validated in `FiducialsDetector`.
+- With `tracking_window_size_px` set, the node calls `cv2.setNumThreads(1)`.
+
+**Why:** The tracking mode still used several cores. Measured offline on recorded noisy IR frames of small markers:
+- OpenCV's thread pool roughly doubled the CPU time of the small window searches compared with one thread, for
+  little or no gain in wall time. The full scan runs in its own thread, where a slower scan adds no latency to
+  the tracked markers.
+- Most of the CPU went to the full scan, which thresholds and searches the frame once per threshold window size.
+  A single window size cuts that to about a third, but lost markers. Reading the bits from more pixels per cell
+  with a wider margin brought them back (also the result of the earlier offline comparison with learned
+  detectors). Together, about a sixth of the CPU time at the same detection rate.
+
+**Alternatives:**
+- *Turning off OpenCV's busy waiting* (`OPENCV_THREAD_POOL_ACTIVE_WAIT_*`): measured, no reduction; the cost is
+  the parallel work itself, not idle spinning.
+- *A thread-count parameter*: rejected, only tracking mode benefits, and full-frame mode keeps the parallel speed-up
+  for its latency.
+- *Downscaled full scans or OpenCV's `useAruco3Detection`*: rejected earlier, markers a few pixels per cell wide are
+  not found at a lower resolution.
