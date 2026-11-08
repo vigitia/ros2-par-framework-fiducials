@@ -493,3 +493,14 @@ node keeps up with the camera, and the delay from the frame's stamp to `/fiducia
 - Verified offline against `cv_bridge` for `mono8`, `bgr8` and `rgb8`, with and without padded rows. With padded
   colour rows, `cv_bridge` itself returned a different image than the rows hold; the new reader takes `step` into
   account.
+
+## 2026-11-08 — Registered as a sensor processing node in the ament index
+
+**What:** `resource/par_framework_sensor_nodes/fiducials_detector` (display name, description, the sensor nodes it needs) and
+one `data_files` line in `setup.py` that installs it under the resource type `par_framework_sensor_nodes`.
+
+**Why:** `par.launch.py` and the setup wizard now find the framework's sensor nodes through the ament index instead
+of a hard-coded list (`DETECTORS`), so a new or third-party node appears without a change in the core. Format and
+blueprint: `templates/sensor_processing_node_entry.yaml` in ros2-par-framework.
+
+**Rejected:** a shared list in `launch_helpers` (every new node would need a core change).
