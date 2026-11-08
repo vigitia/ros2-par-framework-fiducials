@@ -1,3 +1,4 @@
+# Co-authored by Claude Code: registers the node as a sensor processing node in the ament index
 from setuptools import find_packages, setup
 
 package_name = 'fiducials_detector'
@@ -10,6 +11,9 @@ setup(
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Registers the node as a sensor processing node for par.launch.py and the setup wizard
+        ('share/ament_index/resource_index/par_framework_sensor_nodes',
+            ['resource/par_framework_sensor_nodes/' + package_name]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
