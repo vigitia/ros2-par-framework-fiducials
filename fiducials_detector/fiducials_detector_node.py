@@ -31,15 +31,14 @@ from .serialized_image import read_serialized_image_mono
 NODE_NAME = 'fiducials_detector_node'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
 QUEUE_SIZE = 10
-# The PAR framework's camera topics, onto which its launch files remap every camera driver: the
-# colour image, depth registered to it (from a depth camera), and the colour
-# camera's intrinsics. Another topic is chosen by remapping.
-TOPIC_NAME_FRAME = '/camera/image_raw'
+# The camera's topics: the colour image, depth registered to it (from a depth camera), and the
+# colour camera's intrinsics.
+TOPIC_NAME_FRAME = 'image_raw'
 # With use_compressed, its compressed variant, named by the image_transport convention: JPEGs a
 # camera driver passes through, so it doesn't have to decode them for this node
 TOPIC_NAME_FRAME_COMPRESSED = TOPIC_NAME_FRAME + '/compressed'
-TOPIC_NAME_FRAME_DEPTH = '/camera/depth_registered/image_raw'
-TOPIC_NAME_CAMERA_INFO = '/camera/camera_info'
+TOPIC_NAME_FRAME_DEPTH = 'depth_registered/image_raw'
+TOPIC_NAME_CAMERA_INFO = 'camera_info'
 SYNC_LEEWAY_TIME_SEC = 0.01
 # With use_depth, frames are only processed in pairs with a depth frame. Colour frames arriving
 # without any depth for this long means no depth camera: nothing is published, which the node

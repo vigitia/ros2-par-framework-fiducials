@@ -504,3 +504,20 @@ of a hard-coded list (`DETECTORS`), so a new or third-party node appears without
 blueprint: `templates/sensor_processing_node_entry.yaml` in ros2-par-framework.
 
 **Rejected:** a shared list in `launch_helpers` (every new node would need a core change).
+
+
+## 2026-11-10: relative topic and service names
+
+**What changed:** the node subscribes and publishes with relative names (`image_raw`, `camera_info`, `fiducials`,
+`projection_mapping`, ...) instead of absolute ones (`/camera/image_raw`, `/projection_mapping`, ...).
+
+**Why:** step 1 of the multi-camera plan. ROS 2 nodes use relative names so that the launch file can place them in a
+namespace: with several cameras, each node runs in its camera's namespace (`/cameras/<name>/`) and finds that
+camera's topics without remapping. Until then `par.launch.py` and the calibration launch files remap the camera
+streams onto `/camera/...` (`launch_helpers.create_camera_stream_remappings`); the other relative names resolve in
+the root namespace exactly as the absolute ones did, so nothing changes from outside. A node started alone with
+`ros2 run` needs `-r image_raw:=/camera/image_raw` (and the other camera streams it reads) or `-r __ns:=/camera`.
+
+**Alternatives considered:** keeping the absolute names and remapping every topic per node run in the launch files
+(works, but every node run needs a remap per topic and it is not the ROS 2 convention); a parameter per topic name
+(against the framework rule that topics are chosen by remapping, not by parameter).
