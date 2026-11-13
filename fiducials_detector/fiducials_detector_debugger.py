@@ -1,29 +1,26 @@
-# Class and variable names changed with help of Claude Code, so they say what they count, with
-# units. Claude Code also moved the counters into __init__, so each debugger counts on its own,
-# from when it is created, and made it report the detection rate of every marker once per
-# interval.
+# Written with the help of Claude Code
 
 import time
 
+RESET_INTERVAL_SEC = 1
 
 class DetectionAccuracyDebugger:
 
-    # Co-authored by Claude Code: counters per instance, one per marker id
     def __init__(self, marker_id_to_debug=-1):
         self.marker_id_to_debug = marker_id_to_debug
         self.frame_count = 0
-        # marker id -> number of frames of the interval in which it was detected
+        # Count for each marker id the number of frames in which it was detected (for the current interval)
         self.detection_counts_by_marker_id = {}
         self.interval_start_sec = time.time()
 
-    # Co-authored by Claude Code: names, one line per interval with the rate of every marker
+    # Count all new frames and update the timestamp
     def on_new_frame(self):
         now_sec = time.time()
 
         # Print the rates of the interval that just ended, then reset, before this frame is
         # counted, so the frame and its markers (on_new_marker) land in the same interval. Once
         # per interval, so the output stays readable at any frame rate
-        RESET_INTERVAL_SEC = 1
+
         if now_sec - self.interval_start_sec > RESET_INTERVAL_SEC and self.frame_count > 0:
             print(f'[DetectionAccuracyDebugger]: Detection rate over {self.frame_count} frames: '
                   f'{self._create_detection_rates_text()}')

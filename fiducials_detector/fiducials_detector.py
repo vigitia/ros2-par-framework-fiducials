@@ -1,8 +1,7 @@
 # Choice between ArUco markers and AprilTags, the dictionary and detector settings (including the
 # adaptive threshold window sizes and how the bits are read) as constructor arguments added with
 # help of Claude Code.
-# Claude Code also renamed constants, functions and variables so their names say what they hold,
-# with units, and added the mean image of several frames (FrameMeanBuffer) whose markers are
+# Claude Code added the mean image of several frames (FrameMeanBuffer) whose markers are
 # merged with the frame's, for noisy frames of still markers, and the tracking mode that searches
 # only windows around known markers (MarkerTracker, detect_fiducials_in_windows) while whole
 # frames are searched in a background thread (BackgroundFullScanner).
@@ -18,7 +17,7 @@ import numpy as np
 
 from .fiducials_detector_debugger import DetectionAccuracyDebugger
 
-# Prefix of the cv2.aruco dictionary constants per marker type, e.g. DICT_4X4_100 or
+# Prefixes of the cv2.aruco dictionary constants per marker type, e.g. DICT_4X4_100 or
 # DICT_APRILTAG_36h11
 MARKER_DICTIONARY_PREFIXES = {
     'aruco': 'DICT_',
@@ -29,8 +28,9 @@ DEFAULT_MARKER_DICTIONARIES = {
     'aruco': '4X4_100',
     'apriltag': '36h11',
 }
-# OpenCV rejects adaptive threshold windows smaller than this
+# OpenCV rejects adaptive threshold windows smaller than this. This constant is used for the ROS2 parameters.
 MIN_ADAPTIVE_THRESH_WIN_SIZE_PX = 3
+
 CORNER_REFINEMENT_METHODS = {
     'none': aruco.CORNER_REFINE_NONE,
     'subpix': aruco.CORNER_REFINE_SUBPIX,
@@ -38,12 +38,11 @@ CORNER_REFINEMENT_METHODS = {
     'apriltag': aruco.CORNER_REFINE_APRILTAG,
 }
 
-# Debug preview: the frame scaled to this width for every camera (up or down), also the window's
-# starting width; the window can be resized further by dragging
+# Debug preview: the frame scaled to this width for every camera (up or down). The window can be resized by dragging
 PREVIEW_WIDTH_PX = 800
 PREVIEW_WINDOW_NAME = 'fiducials_detector'
 
-# Following lines until compute_corners_in_camera_space written by Claude Code
+# Following constants written by Claude Code
 # The depth of a marker is taken from its inner part only: the polygon shrunk towards its centre to
 # this fraction. Pixels at the edge may already see what lies around the marker.
 DEPTH_SAMPLE_INNER_FRACTION = 0.7
@@ -427,7 +426,6 @@ class FiducialsDetector:
         if corner_refinement not in CORNER_REFINEMENT_METHODS:
             raise ValueError(f'corner_refinement must be one of '
                              f'{list(CORNER_REFINEMENT_METHODS)}, got {corner_refinement!r}')
-        # OpenCV would only fail on these inside the first detectMarkers call, with an assertion
         if adaptive_thresh_win_size_min_px < MIN_ADAPTIVE_THRESH_WIN_SIZE_PX:
             raise ValueError(f'adaptive_thresh_win_size_min_px must be at least '
                              f'{MIN_ADAPTIVE_THRESH_WIN_SIZE_PX}, got '
@@ -636,31 +634,3 @@ class FiducialsDetector:
         centroid_x_px = sum(x_values_px) / vertex_count
         centroid_y_px = sum(y_values_px) / vertex_count
         return centroid_x_px, centroid_y_px
-
-    # OLD CODE FOR DEBUGGING DETECTION ACCURACY
-    # DEBUG_MODE = True
-    # N_FRAMES_DETECTION_RATIO = 100
-    # markers_detected = [False] * N_FRAMES_DETECTION_RATIO
-    # marker_detection_rate = None
-    # if DEBUG_MODE:
-    #     self.markers_detected = self.markers_detected[1:N_FRAMES_DETECTION_RATIO] + [
-    #         True if (len(aruco_markers) > 0) else False]
-    #     self.marker_detection_rate = sum(self.markers_detected) / N_FRAMES_DETECTION_RATIO
-
-
-# Co-authored by Claude Code: image path as argument, markers drawn here instead of in
-# detect_fiducials, so detection never opens a window
-if __name__ == '__main__':
-    import sys
-
-    if len(sys.argv) != 2:
-        sys.exit('[fiducials_detector]: usage: python -m fiducials_detector.fiducials_detector '
-                 '<image path>')
-    test_frame = cv2.imread(sys.argv[1])
-    if test_frame is None:
-        sys.exit(f'[fiducials_detector]: could not read the image {sys.argv[1]}')
-    fiducials_detector = FiducialsDetector(debug=True)
-    detected_markers = fiducials_detector.detect_fiducials(test_frame)
-    print(f'[fiducials_detector]: found ids {[int(marker["id"]) for marker in detected_markers]}')
-    # The debug preview is open: keep it until a key is pressed
-    cv2.waitKey(0)

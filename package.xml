@@ -15,7 +15,7 @@
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>message_filters</exec_depend>
-  <!-- Co-authored by Claude Code -->
+
   <exec_depend>par_framework_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
