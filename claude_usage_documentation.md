@@ -649,7 +649,7 @@ needs numpy only at runtime).
 ## 2026-11-17: clearer method names in `fiducials_detector_node.py`
 
 ### What changed
-- `_create_tracking` → `_create_marker_tracker_and_full_scanner`,
+- `_create_tracking` → `_init_tracking_mode`,
   `_detect_fiducials_with_tracking` → `_detect_fiducials_in_tracking_mode`,
   `_on_frame_arrived` / `_on_depth_arrived` → `_record_frame_arrival_time` / `_record_depth_arrival_time`,
   `_on_frame_and_depth_received` → `_on_frame_and_depth_pair_received`,
@@ -712,3 +712,31 @@ needs numpy only at runtime).
 ### Why / alternatives
 - A helper for reading frames from serialized messages, not detection logic, so it joins the
   other helper in `utils/`.
+
+## 2026-11-17: debug preview window in its own class
+
+### What changed
+- New `utils/detection_preview_window.py` with `DetectionPreviewWindow.show_frame_with_markers()`;
+  it holds the preview constants and the "window sized once" state. `FiducialsDetector` creates
+  one with `debug` and calls it instead of its former `_show_preview`.
+
+### Why / alternatives
+- Drawing and window handling are debug-only and unrelated to detection; separated, the detector
+  file holds only detection, next to the accuracy debugger in `utils/`.
+- Considered merging it into `DetectionAccuracyDebugger`: rejected, that class counts rates and
+  prints, the window shows images; one class per job keeps both small.
+
+## 2026-11-17: stay subscribed to `camera_info`
+
+### What changed
+- `fiducials_detector_node.py`: the node no longer unsubscribes from `camera_info` after the first
+  calibrated message. Every calibrated message updates the camera matrix and distortion; the info
+  log is written once, when the first one arrives.
+
+### Why / alternatives
+- ROS 2 camera consumers (image_transport's CameraSubscriber, image_proc, depth_image_proc) keep
+  reading `camera_info`; unsubscribing missed intrinsics stored with `set_camera_info` while the
+  camera runs. The message is small compared with the detection on the same frame.
+- Synchronizing `camera_info` with the frames was rejected: intrinsics rarely change, and a third
+  synchronized topic would drop frames whenever one message is late. Re-subscribing on a timer was
+  rejected: more code and still a delay.

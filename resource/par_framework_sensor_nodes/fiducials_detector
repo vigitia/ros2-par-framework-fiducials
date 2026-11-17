@@ -1,11 +1,9 @@
-# Written by Claude Code
-# This package's entry in the ament index as a sensor processing node (resource type
-# par_framework_sensor_nodes; format: templates/sensor_processing_node_entry.yaml of
-# ros2-par-framework). par.launch.py runs the node once per camera that par_launch.fiducials_detector
-# lists (e.g. fiducials_detector: [overhead]), in that camera's namespace; the setup wizard lists it.
+# Written with the help of Claude Code
+# This package's entry in the ament index registers the node as a sensor processing node of the
+# ros2-par-framework,
 
-display_name: Fiducials detector
-description: Finds markers (ArUco, Apriltags) in the camera image and publishes their corners in camera pixels.
+display_name: Fiducials Detector
+description: Finds markers (ArUco, Apriltags) in the camera image and publishes their corners in camera pixels. Optional depth.
 
 # Sensor nodes whose output this node reads; started along with it
 required_sensor_nodes: []

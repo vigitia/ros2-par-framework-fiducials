@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
-<!-- Co-authored by Claude Code: the declared runtime dependencies -->
+
 <package format="3">
   <name>fiducials_detector</name>
-  <version>0.0.0</version>
+  <version>0.1.0</version>
   <description>TODO: Package description</description>
   <maintainer email="vitus.maierhoefer@gmail.com">vitus</maintainer>
   <license>TODO: License declaration</license>

@@ -28,7 +28,6 @@ NODE_NAME = 'fiducials_detector_node'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
 FIDUCIALS_PUBLISHER_QUEUE_SIZE = 10
 
-
 # Default topic names defined by the conventions of ROS 2 and the PAR framework
 TOPIC_NAME_FRAME = 'image_raw'
 # With use_compressed: JPEGs a camera driver passes through, so it doesn't have to decode them for this node
@@ -82,20 +81,22 @@ TRACKING_MAX_UNSEEN_TIME_SEC = 0.5
 
 class FiducialsDetectorNode(Node):
 
-    # Co-authored by Claude Code
+    # The colour camera's intrinsics, set once calibrated ones arrive (only with use_depth)
+    camera_matrix = None
+    distortion_coefficients = None
+
     def __init__(self):
         super().__init__(node_name=NODE_NAME)
 
+        self.cv_bridge = CvBridge()
+
         self._declare_parameters()
 
-        self.cv_bridge = CvBridge()
-        debug = self.get_parameter(PARAMETER_DEBUG).value
-        self.fiducials_detector = self._create_fiducials_detector(debug)
-        self._create_marker_tracker_and_full_scanner()
+        self.fiducials_detector = self._create_fiducials_detector(self.get_parameter(PARAMETER_DEBUG).value)
 
-        # The colour camera's intrinsics, set once calibrated ones arrive (only with use_depth)
-        self.camera_matrix = None
-        self.distortion_coefficients = None
+        # Check if Tracking Mode is enabled
+        if self.get_parameter(PARAMETER_TRACKING_MODE).value:
+            self._init_tracking_mode()
 
         self._create_subscriptions()
 
@@ -104,18 +105,12 @@ class FiducialsDetectorNode(Node):
             topic=TOPIC_NAME_FIDUCIALS,
             qos_profile=FIDUCIALS_PUBLISHER_QUEUE_SIZE)
 
-    # Written by Claude Code
-    def destroy_node(self):
-        if self.background_full_scanner is not None:
-            self.background_full_scanner.stop()
-        super().destroy_node()
-
-    # Written with the help of Claude Code
+    # Descriptions written with the help of Claude Code
     def _declare_parameters(self):
-        # All read-only because the subscription and the detector are created once at startup, a
-        # later change would have no effect
+        # All read-only. So far there has been no need to changes these values during runtime.
         self.declare_parameter(PARAMETER_MARKER_TYPE, 'aruco', ParameterDescriptor(
-            description='Type of markers to detect: aruco or apriltag.', read_only=True))
+            description='Type of markers to detect: aruco or apriltag.',
+            read_only=True))
         self.declare_parameter(PARAMETER_DICTIONARY, '', ParameterDescriptor(
             description='Marker dictionary without the DICT_ / DICT_APRILTAG_ prefix, e.g. '
                         '4X4_100 or 6X6_250 for aruco, 16h5 or 36h11 for apriltag. Empty uses '
@@ -184,9 +179,8 @@ class FiducialsDetectorNode(Node):
                         'little, so only for testing.',
             read_only=True))
 
-    # Written by Claude Code
     def _create_fiducials_detector(self, debug):
-        """Return a FiducialsDetector with the detector settings from the node's parameters."""
+        """Return a FiducialsDetector instance with the detector settings from the node's parameters."""
         fiducials_detector = FiducialsDetector(
             marker_type=self.get_parameter(PARAMETER_MARKER_TYPE).value,
             dictionary_name=self.get_parameter(PARAMETER_DICTIONARY).value,
@@ -203,13 +197,11 @@ class FiducialsDetectorNode(Node):
             debug=debug)
         return fiducials_detector
 
-    # Written by Claude Code
-    def _create_marker_tracker_and_full_scanner(self):
+    # Written with the help of Claude Code
+    def _init_tracking_mode(self):
         """With tracking_mode, a marker tracker and the background full scanner."""
-        self.marker_tracker = None
-        self.background_full_scanner = None
-        if not self.get_parameter(PARAMETER_TRACKING_MODE).value:
-            return
+
+        # Read parameters for Tracking Mode
         search_window_size_px = self.get_parameter(PARAMETER_TRACKING_WINDOW_SIZE_PX).value
         if search_window_size_px <= 0:
             raise ValueError(f'{PARAMETER_TRACKING_WINDOW_SIZE_PX} must be positive, got '
@@ -218,6 +210,8 @@ class FiducialsDetectorNode(Node):
         if full_scan_rate_hz <= 0.0:
             raise ValueError(f'{PARAMETER_FULL_SCAN_RATE_HZ} must be positive, got '
                              f'{full_scan_rate_hz}')
+
+        # Init MarkerTracker and BackgroundFullScanner
         self.marker_tracker = MarkerTracker(search_window_size_px, TRACKING_MAX_UNSEEN_TIME_SEC)
         # OpenCV runs one thread for the whole process. The windows are too small to gain from
         # OpenCV's thread pool, which then costs about twice the CPU time of a single thread, and
@@ -228,10 +222,8 @@ class FiducialsDetectorNode(Node):
         full_scan_detector = self._create_fiducials_detector(debug=False)
         self.background_full_scanner = BackgroundFullScanner(full_scan_detector,
                                                              full_scan_rate_hz)
-        self.get_logger().info(f'tracking: searching {search_window_size_px} px windows around '
-                               f'known markers, whole frames {full_scan_rate_hz} times a second')
 
-    # Written by Claude Code
+    # Written with the help of Claude Code
     def _create_subscriptions(self):
         # Raw frames, or with use_compressed their compressed variant
         if self.get_parameter(PARAMETER_USE_COMPRESSED).value:
@@ -278,7 +270,7 @@ class FiducialsDetectorNode(Node):
         # The name after remapping, which is what the warnings must name
         self.depth_topic_name = depth_subscriber.sub.topic_name
 
-        self.camera_info_subscription = self.create_subscription(
+        self.create_subscription(
             msg_type=CameraInfo,
             topic=TOPIC_NAME_CAMERA_INFO,
             callback=self._on_camera_info_received,
@@ -286,18 +278,17 @@ class FiducialsDetectorNode(Node):
 
     # Written by Claude Code
     def _on_camera_info_received(self, camera_info_msg):
-        # Uncalibrated, the camera matrix is all zeros and pixels have no direction: keep
-        # listening until calibrated intrinsics arrive
+        # Stays subscribed, as ROS 2 camera consumers do: intrinsics stored with set_camera_info
+        # while the camera runs take effect with the next message.
+        # Uncalibrated, the camera matrix is all zeros: skipped, the last valid intrinsics stay
         if camera_info_msg.k[0] == 0.0:
             return
+
+        if self.camera_matrix is None:
+            self.get_logger().info(f'Calibrated camera info received on '
+                                   f'{TOPIC_NAME_CAMERA_INFO}, corners_3d are filled from now on')
         self.camera_matrix = np.reshape(camera_info_msg.k, (3, 3))
         self.distortion_coefficients = np.array(camera_info_msg.d)
-        # camera_info comes with every frame, but the intrinsics stay the same while the camera
-        # runs. Simplification: intrinsics stored with set_camera_info while this node runs take
-        # effect only after a restart. Upgrade: subscribe again on a slow timer.
-        self.destroy_subscription(self.camera_info_subscription)
-        self.get_logger().info(f'Calibrated camera info received, no longer subscribed to '
-                               f'{TOPIC_NAME_CAMERA_INFO}')
 
     # Written by Claude Code
     def _record_frame_arrival_time(self, frame_msg):
@@ -455,8 +446,13 @@ class FiducialsDetectorNode(Node):
             fiducials_list_msg.fiducials.append(fiducial_msg)
         return fiducials_list_msg
 
+    # Written by Claude Code
+    def destroy_node(self):
+        if self.background_full_scanner is not None:
+            self.background_full_scanner.stop()
+        super().destroy_node()
 
-# Co-authored by Claude Code: clean exit on Ctrl-C / launch shutdown, as in hand_landmarks
+
 def main(args=None):
     rclpy.init(args=args)
     node = FiducialsDetectorNode()
@@ -465,16 +461,10 @@ def main(args=None):
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     except Exception:
-        # rclpy's signal handler shuts the context down while spin is running. Depending on
-        # timing a callback or the executor then fails with an RCLError ("context is invalid")
-        # instead of ExternalShutdownException. Errors after the shutdown are just that race;
-        # errors while the context is still valid are real and re-raised.
         if rclpy.ok():
             raise
     finally:
         node.destroy_node()
-        # The signal handler may have shut the context down already, and a second
-        # rclpy.shutdown() raises
         rclpy.try_shutdown()
 
 

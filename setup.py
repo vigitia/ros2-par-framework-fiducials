@@ -1,4 +1,3 @@
-# Co-authored by Claude Code: registers the node as a sensor processing node in the ament index
 from setuptools import find_packages, setup
 
 package_name = 'fiducials_detector'

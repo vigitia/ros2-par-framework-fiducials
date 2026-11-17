@@ -1,6 +1,5 @@
-# Co-authored by Claude Code (Python and pytest caches).
+
 .idea/
 
-# Regenerated automatically by Python and pytest
 __pycache__/
 .pytest_cache/
