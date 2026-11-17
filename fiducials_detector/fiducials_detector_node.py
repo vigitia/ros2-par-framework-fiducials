@@ -1,10 +1,4 @@
-# Co-authored by Claude Code. Claude Code added the compatibility with the camera drivers
-# (topics, best-effort QoS, colour encoding), the parameters for the marker type, dictionary and
-# detector settings (including the threshold window sizes and how the bits are read), the optional
-# depth input (use_depth) that fills corners_3d, the optional compressed input (use_compressed),
-# raw frames read from their serialized messages, the optional detection on the mean of several
-# frames (temporal_mean_frame_count), the optional tracking mode (tracking_window_size_px,
-# full_scan_rate_hz), and split the node into one method per step.
+# Co-authored by Claude Code
 
 import time
 
@@ -23,59 +17,71 @@ from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Header
 
-from .fiducials_detector import (BackgroundFullScanner, compute_corners_in_camera_space,
-                                 DepthArrivalMonitor, FiducialsDetector, FrameMeanBuffer,
-                                 MarkerTracker, merge_fiducials_from_mean_image)
-from .serialized_image import read_serialized_image_mono
+from .depth.corners_in_camera_space import compute_corners_in_camera_space
+from .depth.depth_arrival_monitor import DepthArrivalMonitor
+from .fiducials_detector import FiducialsDetector
+from .tracking.background_full_scanner import BackgroundFullScanner
+from .tracking.marker_tracker import MarkerTracker
+from .utils.serialized_image import read_serialized_image_mono
 
 NODE_NAME = 'fiducials_detector_node'
 TOPIC_NAME_FIDUCIALS = 'fiducials'
-QUEUE_SIZE = 10
-# The camera's topics: the colour image, depth registered to it (from a depth camera), and the
-# colour camera's intrinsics.
+FIDUCIALS_PUBLISHER_QUEUE_SIZE = 10
+
+
+# Default topic names defined by the conventions of ROS 2 and the PAR framework
 TOPIC_NAME_FRAME = 'image_raw'
-# With use_compressed, its compressed variant, named by the image_transport convention: JPEGs a
-# camera driver passes through, so it doesn't have to decode them for this node
+# With use_compressed: JPEGs a camera driver passes through, so it doesn't have to decode them for this node
 TOPIC_NAME_FRAME_COMPRESSED = TOPIC_NAME_FRAME + '/compressed'
 TOPIC_NAME_FRAME_DEPTH = 'depth_registered/image_raw'
 TOPIC_NAME_CAMERA_INFO = 'camera_info'
-SYNC_LEEWAY_TIME_SEC = 0.01
+# With use_depth: how many colour and depth frames the synchronizer keeps to find pairs, and how
+# far apart their stamps may be to count as a pair
+FRAME_DEPTH_SYNC_QUEUE_SIZE = 10
+FRAME_DEPTH_SYNC_SLOP_SEC = 0.01
 # With use_depth, frames are only processed in pairs with a depth frame. Colour frames arriving
 # without any depth for this long means no depth camera: nothing is published, which the node
 # then says.
 DEPTH_MISSING_TIMEOUT_SEC = 2.0
 DEPTH_CHECK_PERIOD_SEC = 1.0
 WARNING_THROTTLE_PERIOD_SEC = 5.0
+
 # REP 118: depth images in 16UC1 are in millimetres, 32FC1 in metres
 M_PER_MM = 0.001
 
-# Camera drivers may publish frames best-effort. A reliable subscriber would be
-# QoS-incompatible and silently receive nothing, while a best-effort one also connects to reliable
-# publishers. Only the newest frame matters, detecting on an old one would publish outdated marker
-# positions.
+# Default QoS profile defined by the Framework for camera frames
 FRAME_QOS = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
                        history=QoSHistoryPolicy.KEEP_LAST, depth=1)
 
+# Set marker type and dict
 PARAMETER_MARKER_TYPE = 'marker_type'
 PARAMETER_DICTIONARY = 'dictionary'
+
+# OpenCV Marker Detection options
 PARAMETER_CORNER_REFINEMENT = 'corner_refinement'
 PARAMETER_ADAPTIVE_THRESH_CONSTANT = 'adaptive_thresh_constant'
 PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX = 'adaptive_thresh_win_size_min_px'
 PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX = 'adaptive_thresh_win_size_max_px'
 PARAMETER_BIT_SAMPLE_PX_PER_CELL = 'bit_sample_px_per_cell'
 PARAMETER_BIT_IGNORED_MARGIN_PER_CELL = 'bit_ignored_margin_per_cell'
+
+# Settings for camera options
 PARAMETER_USE_DEPTH = 'use_depth'
 PARAMETER_USE_COMPRESSED = 'use_compressed'
+
 PARAMETER_DEBUG = 'debug'
-PARAMETER_TEMPORAL_MEAN_FRAME_COUNT = 'temporal_mean_frame_count'
+
+# Settings for Tracking Mode
+PARAMETER_TRACKING_MODE = 'tracking_mode'
 PARAMETER_TRACKING_WINDOW_SIZE_PX = 'tracking_window_size_px'
 PARAMETER_FULL_SCAN_RATE_HZ = 'full_scan_rate_hz'
 # With tracking, a marker not seen in its window for this long is dropped: it was covered, or
 # moved faster than its window; the background full scan finds it again
-TRACKING_MAX_UNSEEN_TIME_S = 0.5
+TRACKING_MAX_UNSEEN_TIME_SEC = 0.5
 
 
 class FiducialsDetectorNode(Node):
+
     # Co-authored by Claude Code
     def __init__(self):
         super().__init__(node_name=NODE_NAME)
@@ -83,32 +89,26 @@ class FiducialsDetectorNode(Node):
         self._declare_parameters()
 
         self.cv_bridge = CvBridge()
-        detector_settings = {
-            'marker_type': self.get_parameter(PARAMETER_MARKER_TYPE).value,
-            'dictionary_name': self.get_parameter(PARAMETER_DICTIONARY).value,
-            'corner_refinement': self.get_parameter(PARAMETER_CORNER_REFINEMENT).value,
-            'adaptive_thresh_constant': self.get_parameter(
-                PARAMETER_ADAPTIVE_THRESH_CONSTANT).value,
-            'adaptive_thresh_win_size_min_px': self.get_parameter(
-                PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX).value,
-            'adaptive_thresh_win_size_max_px': self.get_parameter(
-                PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX).value,
-            'bit_sample_px_per_cell': self.get_parameter(
-                PARAMETER_BIT_SAMPLE_PX_PER_CELL).value,
-            'bit_ignored_margin_per_cell': self.get_parameter(
-                PARAMETER_BIT_IGNORED_MARGIN_PER_CELL).value,
-        }
-        self.fiducials_detector = FiducialsDetector(
-            **detector_settings, debug=self.get_parameter(PARAMETER_DEBUG).value)
-        self._create_tracking(detector_settings)
-        self._create_mean_image_detection(detector_settings)
+        debug = self.get_parameter(PARAMETER_DEBUG).value
+        self.fiducials_detector = self._create_fiducials_detector(debug)
+        self._create_marker_tracker_and_full_scanner()
 
-        self.camera_info = None
+        # The colour camera's intrinsics, set once calibrated ones arrive (only with use_depth)
+        self.camera_matrix = None
+        self.distortion_coefficients = None
+
         self._create_subscriptions()
 
-        self.fiducials_publisher = self.create_publisher(msg_type=FiducialsList,
-                                                         topic=TOPIC_NAME_FIDUCIALS,
-                                                         qos_profile=QUEUE_SIZE)
+        self.fiducials_publisher = self.create_publisher(
+            msg_type=FiducialsList,
+            topic=TOPIC_NAME_FIDUCIALS,
+            qos_profile=FIDUCIALS_PUBLISHER_QUEUE_SIZE)
+
+    # Written by Claude Code
+    def destroy_node(self):
+        if self.background_full_scanner is not None:
+            self.background_full_scanner.stop()
+        super().destroy_node()
 
     # Written with the help of Claude Code
     def _declare_parameters(self):
@@ -160,26 +160,23 @@ class FiducialsDetectorNode(Node):
                         f'camera) instead of {TOPIC_NAME_FRAME}, and decode them straight to '
                         f'greyscale. Only for camera drivers that publish it.',
             read_only=True))
-        self.declare_parameter(PARAMETER_TRACKING_WINDOW_SIZE_PX, 0, ParameterDescriptor(
-            description='0: off, every frame is searched whole. More than 0: search each frame '
-                        'only in square windows of this size around the known markers, shifted '
-                        'by their last movement, and search whole frames in a background thread '
-                        f'at {PARAMETER_FULL_SCAN_RATE_HZ} to find new or lost markers. Much '
-                        'faster per frame; a new marker appears only after the next whole-frame '
-                        'search. The window must hold the marker plus its movement between two '
-                        'processed frames.',
+        self.declare_parameter(PARAMETER_TRACKING_MODE, False, ParameterDescriptor(
+            description='false: every frame is searched whole. true: search each frame only in '
+                        f'square windows of {PARAMETER_TRACKING_WINDOW_SIZE_PX} around the known '
+                        'markers, shifted by their last movement, and search whole frames in a '
+                        f'background thread at {PARAMETER_FULL_SCAN_RATE_HZ} to find new or lost '
+                        'markers. Much faster per frame; a new marker appears only after the next '
+                        'whole-frame search.',
+            read_only=True))
+        self.declare_parameter(PARAMETER_TRACKING_WINDOW_SIZE_PX, 200, ParameterDescriptor(
+            description=f'With {PARAMETER_TRACKING_MODE}: side length of the square search '
+                        'window around each known marker. It must hold the marker plus its '
+                        'movement between two processed frames.',
             read_only=True))
         self.declare_parameter(PARAMETER_FULL_SCAN_RATE_HZ, 5.0, ParameterDescriptor(
-            description=f'With {PARAMETER_TRACKING_WINDOW_SIZE_PX}: how often per second whole '
+            description=f'With {PARAMETER_TRACKING_MODE}: how often per second whole '
                         f'frames are searched in the background. Higher finds new markers '
                         f'sooner and takes more CPU from the tracking.',
-            read_only=True))
-        self.declare_parameter(PARAMETER_TEMPORAL_MEAN_FRAME_COUNT, 0, ParameterDescriptor(
-            description='0: off. 2 or more: also detect markers on the mean of the last this many '
-                        'frames and add the markers that only the mean finds. Helps with noisy '
-                        'frames (short exposure at high gain) while markers lie still; moving '
-                        'markers come from the frame itself. Doubles the detection time per '
-                        'frame.',
             read_only=True))
         self.declare_parameter(PARAMETER_DEBUG, False, ParameterDescriptor(
             description='Show the frames with the detected markers in an OpenCV window (needs a '
@@ -188,54 +185,51 @@ class FiducialsDetectorNode(Node):
             read_only=True))
 
     # Written by Claude Code
-    def _create_tracking(self, detector_settings):
-        """With tracking_window_size_px > 0, a marker tracker and the background full scanner."""
+    def _create_fiducials_detector(self, debug):
+        """Return a FiducialsDetector with the detector settings from the node's parameters."""
+        fiducials_detector = FiducialsDetector(
+            marker_type=self.get_parameter(PARAMETER_MARKER_TYPE).value,
+            dictionary_name=self.get_parameter(PARAMETER_DICTIONARY).value,
+            corner_refinement=self.get_parameter(PARAMETER_CORNER_REFINEMENT).value,
+            adaptive_thresh_constant=self.get_parameter(
+                PARAMETER_ADAPTIVE_THRESH_CONSTANT).value,
+            adaptive_thresh_win_size_min_px=self.get_parameter(
+                PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MIN_PX).value,
+            adaptive_thresh_win_size_max_px=self.get_parameter(
+                PARAMETER_ADAPTIVE_THRESH_WIN_SIZE_MAX_PX).value,
+            bit_sample_px_per_cell=self.get_parameter(PARAMETER_BIT_SAMPLE_PX_PER_CELL).value,
+            bit_ignored_margin_per_cell=self.get_parameter(
+                PARAMETER_BIT_IGNORED_MARGIN_PER_CELL).value,
+            debug=debug)
+        return fiducials_detector
+
+    # Written by Claude Code
+    def _create_marker_tracker_and_full_scanner(self):
+        """With tracking_mode, a marker tracker and the background full scanner."""
         self.marker_tracker = None
-        self.full_scanner = None
+        self.background_full_scanner = None
+        if not self.get_parameter(PARAMETER_TRACKING_MODE).value:
+            return
         search_window_size_px = self.get_parameter(PARAMETER_TRACKING_WINDOW_SIZE_PX).value
         if search_window_size_px <= 0:
-            return
+            raise ValueError(f'{PARAMETER_TRACKING_WINDOW_SIZE_PX} must be positive, got '
+                             f'{search_window_size_px}')
         full_scan_rate_hz = self.get_parameter(PARAMETER_FULL_SCAN_RATE_HZ).value
         if full_scan_rate_hz <= 0.0:
             raise ValueError(f'{PARAMETER_FULL_SCAN_RATE_HZ} must be positive, got '
                              f'{full_scan_rate_hz}')
-        self.marker_tracker = MarkerTracker(search_window_size_px, TRACKING_MAX_UNSEEN_TIME_S)
+        self.marker_tracker = MarkerTracker(search_window_size_px, TRACKING_MAX_UNSEEN_TIME_SEC)
         # OpenCV runs one thread for the whole process. The windows are too small to gain from
         # OpenCV's thread pool, which then costs about twice the CPU time of a single thread, and
         # the full scan runs in its own thread anyway, where a slower scan costs no latency
         cv2.setNumThreads(1)
         # Its own detector without debug: one OpenCV detector must not run in two threads, and
         # the preview window belongs to the main thread
-        self.full_scanner = BackgroundFullScanner(
-            FiducialsDetector(**detector_settings, debug=False), full_scan_rate_hz)
+        full_scan_detector = self._create_fiducials_detector(debug=False)
+        self.background_full_scanner = BackgroundFullScanner(full_scan_detector,
+                                                             full_scan_rate_hz)
         self.get_logger().info(f'tracking: searching {search_window_size_px} px windows around '
                                f'known markers, whole frames {full_scan_rate_hz} times a second')
-
-    # Written by Claude Code
-    def _create_mean_image_detection(self, detector_settings):
-        """
-        Create a frame buffer and a detector for its mean image, if temporal_mean_frame_count >= 2.
-
-        Simplification: the buffer holds the frames this node processed, which are not
-        consecutive camera frames when detection is slower than the camera. At rest that makes
-        no difference to the noise; for consecutive frames, a separate callback group could fill
-        the buffer from every frame.
-        """
-        self.frame_mean_buffer = None
-        self.mean_image_detector = None
-        mean_frame_count = self.get_parameter(PARAMETER_TEMPORAL_MEAN_FRAME_COUNT).value
-        if mean_frame_count < 2:
-            return
-        if self.marker_tracker is not None:
-            # The mean would need whole frames again, which tracking exists to avoid
-            self.get_logger().warning(f'{PARAMETER_TEMPORAL_MEAN_FRAME_COUNT} is ignored while '
-                                      f'{PARAMETER_TRACKING_WINDOW_SIZE_PX} is set')
-            return
-        self.frame_mean_buffer = FrameMeanBuffer(mean_frame_count)
-        # Without debug, so the preview and the accuracy count show the camera frames only
-        self.mean_image_detector = FiducialsDetector(**detector_settings, debug=False)
-        self.get_logger().info(f'also detecting on the mean of the last {mean_frame_count} '
-                               f'frames')
 
     # Written by Claude Code
     def _create_subscriptions(self):
@@ -261,7 +255,7 @@ class FiducialsDetectorNode(Node):
             return
         self.create_subscription(msg_type=frame_msg_type,
                                  topic=topic_name_frame,
-                                 callback=self._on_frame_received,
+                                 callback=self._detect_and_publish_fiducials_in_frame_msg,
                                  qos_profile=FRAME_QOS)
 
     # Written by Claude Code
@@ -271,14 +265,15 @@ class FiducialsDetectorNode(Node):
                                       qos_profile=FRAME_QOS)
         depth_subscriber = Subscriber(self, Image, TOPIC_NAME_FRAME_DEPTH, qos_profile=FRAME_QOS)
         self.frame_depth_synchronizer = ApproximateTimeSynchronizer(
-            [frame_subscriber, depth_subscriber], QUEUE_SIZE, SYNC_LEEWAY_TIME_SEC)
-        self.frame_depth_synchronizer.registerCallback(self._on_frame_and_depth_received)
+            [frame_subscriber, depth_subscriber], FRAME_DEPTH_SYNC_QUEUE_SIZE,
+            FRAME_DEPTH_SYNC_SLOP_SEC)
+        self.frame_depth_synchronizer.registerCallback(self._on_frame_and_depth_pair_received)
 
         # Each subscriber also reports its own messages, so a missing depth camera shows up even
         # though the synchronizer then never forms a pair
         self.depth_arrival_monitor = DepthArrivalMonitor(DEPTH_MISSING_TIMEOUT_SEC)
-        frame_subscriber.registerCallback(self._on_frame_arrived)
-        depth_subscriber.registerCallback(self._on_depth_arrived)
+        frame_subscriber.registerCallback(self._record_frame_arrival_time)
+        depth_subscriber.registerCallback(self._record_depth_arrival_time)
         self.create_timer(DEPTH_CHECK_PERIOD_SEC, self._warn_if_depth_missing)
         # The name after remapping, which is what the warnings must name
         self.depth_topic_name = depth_subscriber.sub.topic_name
@@ -286,16 +281,17 @@ class FiducialsDetectorNode(Node):
         self.camera_info_subscription = self.create_subscription(
             msg_type=CameraInfo,
             topic=TOPIC_NAME_CAMERA_INFO,
-            callback=self._on_camera_info,
+            callback=self._on_camera_info_received,
             qos_profile=FRAME_QOS)
 
     # Written by Claude Code
-    def _on_camera_info(self, camera_info_msg):
-        self.camera_info = camera_info_msg
-        # Uncalibrated, the camera matrix is all zeros: keep listening until calibrated
-        # intrinsics arrive
+    def _on_camera_info_received(self, camera_info_msg):
+        # Uncalibrated, the camera matrix is all zeros and pixels have no direction: keep
+        # listening until calibrated intrinsics arrive
         if camera_info_msg.k[0] == 0.0:
             return
+        self.camera_matrix = np.reshape(camera_info_msg.k, (3, 3))
+        self.distortion_coefficients = np.array(camera_info_msg.d)
         # camera_info comes with every frame, but the intrinsics stay the same while the camera
         # runs. Simplification: intrinsics stored with set_camera_info while this node runs take
         # effect only after a restart. Upgrade: subscribe again on a slow timer.
@@ -304,27 +300,28 @@ class FiducialsDetectorNode(Node):
                                f'{TOPIC_NAME_CAMERA_INFO}')
 
     # Written by Claude Code
-    def _on_frame_arrived(self, frame_msg):
+    def _record_frame_arrival_time(self, frame_msg):
         self.depth_arrival_monitor.on_frame(time.monotonic())
 
     # Written by Claude Code
-    def _on_depth_arrived(self, depth_msg):
+    def _record_depth_arrival_time(self, depth_msg):
         self.depth_arrival_monitor.on_depth(time.monotonic())
 
     # Written by Claude Code
     def _warn_if_depth_missing(self):
         if self.depth_arrival_monitor.is_depth_missing(time.monotonic()):
             self.get_logger().warning(
-                f'use_depth is true, but no depth frames arrive on {self.depth_topic_name}, so '
-                f'no fiducials are published. Connect a depth camera or set use_depth to false.',
+                f'{PARAMETER_USE_DEPTH} is true, but no depth frames arrive on '
+                f'{self.depth_topic_name}, so no fiducials are published. Connect a depth camera '
+                f'or set {PARAMETER_USE_DEPTH} to false.',
                 throttle_duration_sec=WARNING_THROTTLE_PERIOD_SEC)
 
     # Written by Claude Code
-    def _on_frame_and_depth_received(self, frame_msg, depth_msg):
+    def _on_frame_and_depth_pair_received(self, frame_msg, depth_msg):
         depth_image_m = self.cv_bridge.imgmsg_to_cv2(depth_msg)
         if depth_msg.encoding == '16UC1':
             depth_image_m = depth_image_m.astype(np.float32) * M_PER_MM
-        self._on_frame_received(frame_msg, depth_image_m)
+        self._detect_and_publish_fiducials_in_frame_msg(frame_msg, depth_image_m)
 
     # Written by Claude Code
     def _on_serialized_frame_received(self, serialized_frame):
@@ -338,7 +335,7 @@ class FiducialsDetectorNode(Node):
         image_fields = read_serialized_image_mono(serialized_frame)
         if image_fields is None:
             frame_msg = deserialize_message(serialized_frame, Image)
-            self._on_frame_received(frame_msg)
+            self._detect_and_publish_fiducials_in_frame_msg(frame_msg)
             return
         stamp_sec, stamp_nanosec, frame_id, frame_mono = image_fields
         frame_header = Header(frame_id=frame_id)
@@ -347,26 +344,24 @@ class FiducialsDetectorNode(Node):
         self._detect_and_publish_fiducials(frame_header, frame_mono)
 
     # Co-authored by Claude Code: one method per step
-    def _on_frame_received(self, frame_msg, depth_image_m=None):
+    def _detect_and_publish_fiducials_in_frame_msg(self, frame_msg, depth_image_m=None):
         """Detect the markers in a raw or compressed frame, with depth (metres) for corners_3d."""
         frame_mono = self._decode_frame_mono(frame_msg)
         if frame_mono is None:
             return
         self._detect_and_publish_fiducials(frame_msg.header, frame_mono, depth_image_m)
 
-    # Co-authored by Claude Code: split from _on_frame_received, so frames read from their
-    # serialized message take the same steps
+    # Co-authored by Claude Code: one shared path for frame messages and frames read from their
+    # serialized message
     def _detect_and_publish_fiducials(self, frame_header, frame_mono, depth_image_m=None):
         """Detect the markers in a greyscale frame and publish them with the frame's header."""
         if depth_image_m is not None:
             depth_image_m = self._get_depth_image_on_frame_grid(depth_image_m, frame_mono)
 
         if self.marker_tracker is not None:
-            fiducials = self._detect_fiducials_with_tracking(frame_mono, frame_header.stamp)
+            fiducials = self._detect_fiducials_in_tracking_mode(frame_mono, frame_header.stamp)
         else:
             fiducials = self.fiducials_detector.detect_fiducials(frame_mono)
-        if self.frame_mean_buffer is not None:
-            fiducials = self._add_fiducials_from_mean_image(fiducials, frame_mono)
         if depth_image_m is not None:
             self._add_corners_3d(fiducials, depth_image_m)
 
@@ -376,36 +371,22 @@ class FiducialsDetectorNode(Node):
         self.fiducials_publisher.publish(fiducials_list_msg)
 
     # Written by Claude Code
-    def _detect_fiducials_with_tracking(self, frame_mono, frame_stamp):
+    def _detect_fiducials_in_tracking_mode(self, frame_mono, frame_stamp):
         """Search only around known markers; whole frames go to the background scanner."""
         # The camera's stamp, not the arrival time: velocities stay right when frames queue up
-        frame_time_s = frame_stamp.sec + frame_stamp.nanosec * 1e-9
-        self.full_scanner.submit_frame(frame_mono, frame_time_s)
-        full_scan_result = self.full_scanner.get_new_result()
+        frame_time_sec = frame_stamp.sec + frame_stamp.nanosec * 1e-9
+        self.background_full_scanner.set_newest_frame(frame_mono, frame_time_sec)
+        full_scan_result = self.background_full_scanner.get_new_result()
         if full_scan_result is not None:
-            scan_fiducials, scan_time_s = full_scan_result
-            self.marker_tracker.add_from_full_scan(scan_fiducials, scan_time_s)
+            scan_fiducials, scan_time_sec = full_scan_result
+            self.marker_tracker.add_untracked_fiducials(scan_fiducials, scan_time_sec)
         frame_height_px, frame_width_px = frame_mono.shape[:2]
-        search_windows_px = self.marker_tracker.search_windows_px(frame_time_s, frame_width_px,
-                                                                  frame_height_px)
+        search_windows_px = self.marker_tracker.compute_search_windows_px(
+            frame_time_sec, frame_width_px, frame_height_px)
         fiducials = self.fiducials_detector.detect_fiducials_in_windows(frame_mono,
                                                                         search_windows_px)
-        self.marker_tracker.update_from_windows(fiducials, frame_time_s)
+        self.marker_tracker.update_from_window_detections(fiducials, frame_time_sec)
         return fiducials
-
-    # Written by Claude Code
-    def destroy_node(self):
-        if self.full_scanner is not None:
-            self.full_scanner.stop()
-        super().destroy_node()
-
-    # Written by Claude Code
-    def _add_fiducials_from_mean_image(self, frame_fiducials, frame_mono):
-        mean_image_mono = self.frame_mean_buffer.add_frame_and_get_mean(frame_mono)
-        if mean_image_mono is None:
-            return frame_fiducials
-        mean_image_fiducials = self.mean_image_detector.detect_fiducials(mean_image_mono)
-        return merge_fiducials_from_mean_image(frame_fiducials, mean_image_fiducials)
 
     # Written by Claude Code
     def _decode_frame_mono(self, frame_msg):
@@ -444,29 +425,29 @@ class FiducialsDetectorNode(Node):
     # Written by Claude Code
     def _add_corners_3d(self, fiducials, depth_image_m):
         """Add each marker's corners in the camera's optical frame, once intrinsics are known."""
-        # Uncalibrated, the camera matrix is all zeros and pixels have no direction
-        if self.camera_info is None or self.camera_info.k[0] == 0.0:
+        if self.camera_matrix is None:
             return
-        camera_matrix = np.reshape(self.camera_info.k, (3, 3))
-        distortion_coefficients = np.array(self.camera_info.d)
         for detected_marker in fiducials:
             detected_marker['corners_3d'] = compute_corners_in_camera_space(
-                detected_marker['corners'], depth_image_m, camera_matrix, distortion_coefficients)
+                detected_marker['corners'], depth_image_m, self.camera_matrix,
+                self.distortion_coefficients)
 
     # Co-authored by Claude Code: names, corners unpacked
     @staticmethod
-    def _create_fiducials_list_msg(detected_markers, header):
-        fiducials_list_msg = FiducialsList(header=header)
+    def _create_fiducials_list_msg(detected_markers, frame_header):
+        fiducials_list_msg = FiducialsList(header=frame_header)
         for detected_marker in detected_markers:
-            (x0_px, y0_px), (x1_px, y1_px), (x2_px, y2_px), (x3_px, y3_px) = (
-                detected_marker['corners'].tolist())
-            centroid_x_px, centroid_y_px = detected_marker['centroid']
+            # Python floats: the message fields do not accept NumPy's float32
+            corners_px = detected_marker['corners'].tolist()
+            centroid_px = detected_marker['centroid'].tolist()
             fiducial_msg = Fiducial(id=int(detected_marker['id']),
                                     angle=detected_marker['angle'],
-                                    x0=x0_px, y0=y0_px, x1=x1_px, y1=y1_px,
-                                    x2=x2_px, y2=y2_px, x3=x3_px, y3=y3_px,
-                                    x_centroid=float(centroid_x_px),
-                                    y_centroid=float(centroid_y_px))
+                                    x0=corners_px[0][0], y0=corners_px[0][1],
+                                    x1=corners_px[1][0], y1=corners_px[1][1],
+                                    x2=corners_px[2][0], y2=corners_px[2][1],
+                                    x3=corners_px[3][0], y3=corners_px[3][1],
+                                    x_centroid=centroid_px[0],
+                                    y_centroid=centroid_px[1])
             # Only with use_depth and enough depth on the marker
             if detected_marker.get('corners_3d') is not None:
                 fiducial_msg.corners_3d = [Point(x=float(x_m), y=float(y_m), z=float(z_m))

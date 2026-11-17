@@ -521,3 +521,194 @@ the root namespace exactly as the absolute ones did, so nothing changes from out
 **Alternatives considered:** keeping the absolute names and remapping every topic per node run in the launch files
 (works, but every node run needs a remap per topic and it is not the ROS 2 convention); a parameter per topic name
 (against the framework rule that topics are chosen by remapping, not by parameter).
+
+
+## 2026-11-17: `fiducials_detector.py` split into modules, smaller helpers
+
+**What changed:**
+- `fiducials_detector.py` keeps the detector (`FiducialsDetector`) and the marker-list helpers
+  (`merge_fiducials_from_mean_image`, `_is_marker_in_list`). Moved unchanged into their own modules:
+  `marker_depth.py` (`compute_corners_in_camera_space`, `DepthArrivalMonitor` and the depth constants),
+  `marker_tracker.py` (`MarkerTracker`, `BackgroundFullScanner`) and `frame_mean_buffer.py` (`FrameMeanBuffer`).
+  The node imports from the new modules.
+- The marker angle is computed as `atan2` of the top edge directly. The old code measured the angle against
+  `(frame height, 0)`; only the direction of that vector mattered, so the result is the same (checked against the
+  old formula on random corners). The method no longer needs the frame, and the StackOverflow helper is gone.
+  The result stays a truncated `int`, because `Fiducial.angle` is an `int32`.
+- The centroid is `corners.mean(axis=0)` (a NumPy array instead of a tuple; the node unpacks it the same way).
+- The marker dict is built in one place (`_create_marker_dict`) instead of twice.
+- Both `DetectorParameters` objects (full frame and windows) are built by one function
+  (`_create_detector_parameters`) instead of copying attributes by a list of names.
+- Small fixes: unused return value as `_`, `aruco.` used consistently, comments that contradicted the code.
+- `test/test_corners_to_camera_space.py` imports `compute_corners_in_camera_space` from `marker_depth`. It still
+  imported the old name `corners_to_camera_space`, so the test failed on import.
+
+**Why:** the module held five separate jobs in over 600 lines. Each module can now be read on its own. A list of
+attribute names to copy fails silently: a setting added later but missing from the list would leave the window
+detector on OpenCV's default.
+
+**Alternatives considered:** `merge_fiducials_from_mean_image` in `frame_mean_buffer.py` (rejected: it needs the
+marker matching that the window search also uses, so it would import a private helper across modules); copying the
+parameter object (`cv2` objects do not support `copy` reliably); keeping one file (the user chose the split).
+
+
+## 2026-11-17: node cleanup (`fiducials_detector_node.py`)
+
+**What changed:**
+- `QUEUE_SIZE` split into `FIDUCIALS_PUBLISHER_QUEUE_SIZE` and `FRAME_DEPTH_SYNC_QUEUE_SIZE`; `SYNC_LEEWAY_TIME_SEC`
+  renamed to `FRAME_DEPTH_SYNC_SLOP_SEC` ("slop" is the `message_filters` term).
+- `_on_camera_info` stores `camera_matrix` and `distortion_coefficients` once calibrated intrinsics arrive, instead of
+  the whole message; `_add_corners_3d` only checks `camera_matrix is None`.
+- The missing-depth warning names the parameter through `PARAMETER_USE_DEPTH`.
+- `destroy_node` moved next to `__init__`; `full_scanner` renamed to `background_full_scanner`, `header` to
+  `frame_header` in `_create_fiducials_list_msg`.
+
+**Why:** one constant for two unrelated queue depths would change both when only one is meant. The intrinsics never
+change after the subscription ends, so reshaping them per frame and checking "uncalibrated" in two places was
+redundant.
+
+- Every name for a time in seconds ends in `_sec` / `_SEC`: the `_s` names in `marker_tracker.py` and the node
+  (`time_sec`, `last_seen_time_sec`, `velocity_px_per_sec`, `TRACKING_MAX_UNSEEN_TIME_SEC`, ...) were renamed.
+
+**Alternatives considered:** `_s` / `_S` everywhere instead (rejected by the user: `_sec` reads better).
+
+
+## 2026-11-17: one file per class, plain Python constructs
+
+**What changed:**
+- Each module is named after the class it holds: `marker_tracker.py` (`MarkerTracker`), `background_full_scanner.py`
+  (`BackgroundFullScanner`), `depth_arrival_monitor.py` (`DepthArrivalMonitor`), `frame_mean_buffer.py`
+  (`FrameMeanBuffer`). The function `compute_corners_in_camera_space` and its constants are in
+  `corners_in_camera_space.py`, named after what it computes. `marker_depth.py` and `marker_tracking.py` are gone.
+- No `**dict` unpacking: the detector calls `_create_detector_parameters` with its arguments; the node builds every
+  `FiducialsDetector` through `_create_fiducials_detector(debug)`, which reads the parameters itself, so
+  `_create_tracking` and `_create_mean_image_detection` no longer take a settings dict.
+- No `lambda`: the IPPE pose closest to the depth plane is chosen in a plain loop.
+- No nested tuple unpacking: the node indexes the corner list (`corners_px[0][0]` ...).
+- No `!r` in f-strings, and `dictionary_name or default` became an explicit `if`.
+
+**Why:** the user wants Python that reads simply, without constructs a reader has to know specifically, and wants
+to find a class by its file name.
+
+**Alternatives considered:** wrapping `compute_corners_in_camera_space` in a class so its file is named after a
+class (a class without state), or moving `DepthArrivalMonitor` into the node (rejected by the user in favour of two
+files). List comprehensions stay for now; the user did not select them for replacement.
+
+
+## 2026-11-17: detection on the mean of several frames removed
+
+**What changed:** `FrameMeanBuffer` (`frame_mean_buffer.py`), `merge_fiducials_from_mean_image`, the node's
+`_create_mean_image_detection` and `_add_fiducials_from_mean_image`, and the parameter `temporal_mean_frame_count` are
+gone. `_is_marker_in_list` stays: the window search uses it to report a marker seen in two windows once. The entry in
+the core repo's `par_setup.yaml` is removed as well.
+
+**Why:** no setup used it: the parameter was 0 in `par_setup.yaml` and in every profile. The noisy IR setup it was
+built for got its markers from tuned bit reading (`bit_sample_px_per_cell`, `bit_ignored_margin_per_cell`) and
+tracking instead, which is cheaper, and the node ignored the mean while tracking was on, so the two could not be
+combined. Keeping it cost about 100 lines, a parameter to explain, and a second detector per frame when enabled.
+
+**Alternatives considered:** keeping it as an option for a future noisier camera (rejected: unused code; it is in git
+history, e.g. commit d104eb2, if it is needed again).
+
+
+## 2026-11-17: `marker_id_to_debug` removed from `DetectionAccuracyDebugger`
+
+**What changed:** the debugger's constructor no longer takes `marker_id_to_debug`; `on_new_marker` counts every id.
+
+**Why:** `FiducialsDetector` always created the debugger without arguments, so the filter was always off (-1). The
+output already lists the rate per marker id, so one marker's rate can be read from it without a filter.
+
+**Alternatives considered:** exposing the filter as a ROS parameter (rejected: nothing needs it, and the per-id output
+covers the use case).
+
+
+## 2026-11-17: `python3-numpy` declared in `package.xml`
+
+**What changed:** `<exec_depend>python3-numpy</exec_depend>`.
+
+**Why:** the node and its modules import numpy, but it only arrived indirectly (the OpenCV pip package and
+`cv_bridge` pull it in). rosdep reads only `package.xml`, so an undeclared dependency works by luck and fails at
+import if those packages change. Every other framework package that imports numpy declares it the same way.
+
+**Alternatives considered:** `numpy` in `requirements.txt` (no framework package does this, and it would install a
+second numpy through pip next to the apt one `cv_bridge` needs); `<depend>` (rejected: an `ament_python` package
+needs numpy only at runtime).
+
+## 2026-11-17: dedicated `tracking_mode` parameter
+
+### What changed
+- `fiducials_detector_node.py`: new read-only bool parameter `tracking_mode` (default `false`)
+  switches tracking on. `tracking_window_size_px` now only sets the window size (default 200) and
+  must be positive when tracking is on.
+
+### Why / alternatives
+- A window size of 0 meaning "off" hid an on/off switch inside a size, so it was not obvious from
+  the parameter list that tracking exists or is off. A bool says it directly.
+- Considered keeping 0 as "off" in addition: rejected, two ways to switch it off would conflict.
+
+## 2026-11-17: clearer method names in `fiducials_detector_node.py`
+
+### What changed
+- `_create_tracking` → `_create_marker_tracker_and_full_scanner`,
+  `_detect_fiducials_with_tracking` → `_detect_fiducials_in_tracking_mode`,
+  `_on_frame_arrived` / `_on_depth_arrived` → `_record_frame_arrival_time` / `_record_depth_arrival_time`,
+  `_on_frame_and_depth_received` → `_on_frame_and_depth_pair_received`,
+  `_on_frame_received` → `_detect_and_publish_fiducials_in_frame_msg`,
+  `_on_camera_info` → `_on_camera_info_received`.
+
+### Why / alternatives
+- "arrived" and "received" meant different things (recording a time for the depth monitor vs.
+  processing), which the names did not show. `_on_…_received` is now used only for subscription
+  callbacks, and a method that is also called directly says what it does.
+- Considered `_process_frame_msg` for the shared frame path: rejected, "process" is too generic.
+
+## 2026-11-17: `MarkerTracker` renames and out-of-order frames
+
+### What changed
+- Renamed `search_windows_px` → `compute_search_windows_px`, `update_from_windows` →
+  `update_from_window_detections`, `add_from_full_scan` → `add_untracked_fiducials`,
+  `_add` → `_add_tracked_marker`, `_find_tracked_marker` → `_find_matching_tracked_marker`,
+  `_update_or_add` → `_update_or_add_tracked_marker`; attributes are private; parameters are
+  `detected_fiducials`.
+- A detection older than a track's last sighting no longer updates that track.
+- `Simplification:` comment on the duplicate track a stale full scan can add.
+
+### Why / alternatives
+- Frames can arrive out of order; updating with an older one moved the track back in time.
+- `add_untracked_fiducials` describes what the method does (only adds, never updates) instead
+  of where the detections come from; the tracker does not need to know about the full scan.
+  `add_new_fiducials` was considered and rejected: "new" could mean newly detected or untracked.
+
+## 2026-11-17: `tracking/` and `depth/` subpackages
+
+### What changed
+- `marker_tracker.py` and `background_full_scanner.py` moved to `fiducials_detector/tracking/`,
+  `corners_in_camera_space.py` and `depth_arrival_monitor.py` to `fiducials_detector/depth/`, each
+  with an empty `__init__.py` (`find_packages` picks them up). The node's imports follow.
+
+### Why / alternatives
+- Each folder matches one parameter (`tracking_mode`, `use_depth`): code that is only active with
+  that option is grouped, and someone not using it can skip the folder. The node, the detector
+  core and `serialized_image.py` stay at the top, so the entry point is unchanged.
+- A layer split (`ros/` vs. `core/`) was rejected: it would move the entry point, and the
+  `*_node.py` naming already separates ROS code from plain logic.
+
+## 2026-11-17: debugger moved to `utils/`
+
+### What changed
+- `fiducials_detector_debugger.py` moved to `fiducials_detector/utils/` (with `git mv`, so its
+  history follows); `fiducials_detector.py` imports it from there.
+
+### Why / alternatives
+- It is a testing aid (accuracy preview), not part of detection, so it sits apart from the core
+  modules at the top level.
+
+## 2026-11-17: `serialized_image.py` moved to `utils/`
+
+### What changed
+- `serialized_image.py` moved to `fiducials_detector/utils/` (with `git mv`); the node imports it
+  from there.
+
+### Why / alternatives
+- A helper for reading frames from serialized messages, not detection logic, so it joins the
+  other helper in `utils/`.

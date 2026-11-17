@@ -6,8 +6,7 @@ RESET_INTERVAL_SEC = 1
 
 class DetectionAccuracyDebugger:
 
-    def __init__(self, marker_id_to_debug=-1):
-        self.marker_id_to_debug = marker_id_to_debug
+    def __init__(self):
         self.frame_count = 0
         # Count for each marker id the number of frames in which it was detected (for the current interval)
         self.detection_counts_by_marker_id = {}
@@ -30,12 +29,10 @@ class DetectionAccuracyDebugger:
 
         self.frame_count += 1
 
-    # Co-authored by Claude Code: names, counted per marker id
     def on_new_marker(self, marker_id):
-        if marker_id == self.marker_id_to_debug or self.marker_id_to_debug == -1:
-            marker_id = int(marker_id)
-            previous_count = self.detection_counts_by_marker_id.get(marker_id, 0)
-            self.detection_counts_by_marker_id[marker_id] = previous_count + 1
+        marker_id = int(marker_id)
+        previous_count = self.detection_counts_by_marker_id.get(marker_id, 0)
+        self.detection_counts_by_marker_id[marker_id] = previous_count + 1
 
     # Written by Claude Code
     def _create_detection_rates_text(self):
