@@ -2,6 +2,8 @@
 
 > Readme written together with Claude Code. Comments in the Code indicate where Claude Code was used while creating this package. 
 
+![fiducials.png](assets/fiducials.png)
+
 **Why a custom fiducials detector for the framework?** 
 - Projector light can and will negatively affect the detection of markers. This node can handle both RGB and Near-IR images (in which the projector light becomes invisible).
 - Support for depth cameras. When depth frames arrive via the provided ROS 2 interface, each detected marker gets added depth data automatically.
@@ -21,10 +23,12 @@ Tested on a laptop with a mono camera at 160fps, 1920x1200 px without dropped fr
 
 ### Depth Mode
 
-When depth frames are available and the parameter `use_depth` is set to `True`, depth data is added to each detected marker: `corners_3d` holds its four corners in metres in the camera's optical frame (x right, y down, z forward). A plane is fitted to the depth inside the marker and intersected with the corners' rays, so single missing depth pixels don't matter.
+When depth frames are available and the parameter `use_depth` is set to `True`, depth data is added to each detected marker: 
+`corners_3d` in the published message holds its four corners in metres in the camera's optical frame (x right, y down, z forward). 
+A plane is fitted to the depth inside the marker and intersected with the corners' rays, so single missing depth pixels don't matter.
 
 - Currently, the depth image must be registered to the colour image, i.e. on the same pixel grid (`depth_registered/image_raw`).
-- Frames are only processed in pairs with a depth frame. Without a depth camera nothing is published; the node then logs a warning.
+- Frames are only processed in pairs with a depth frame. Without a depth camera, nothing is published; the node then logs a warning.
 - `corners_3d` stays empty when a marker has too little valid depth.
 - `corners_3d` stays empty until calibrated intrinsics arrive on `camera_info`.
 
@@ -33,7 +37,7 @@ When depth frames are available and the parameter `use_depth` is set to `True`, 
 
 **Subscribed:**
 
-- `image_raw` (sensor_msgs/Image, any encoding cv_bridge converts to mono8), or with `use_compressed`: `image_raw/compressed` (sensor_msgs/CompressedImage).
+- `image_raw` (sensor_msgs/Image: colour, mono8, or 16-bit mono16/16UC1 such as infrared), or with `use_compressed`: `image_raw/compressed` (sensor_msgs/CompressedImage) for cameras like the Logitech Brio.
 - With `use_depth`: `depth_registered/image_raw` (sensor_msgs/Image, 16UC1 in mm or 32FC1 in m) and `camera_info` (sensor_msgs/CameraInfo).
 
 All names are relative, so they follow the node's namespace and remappings. Frames are subscribed with BEST_EFFORT, depth 1.
@@ -76,12 +80,6 @@ Standalone, with your camera's topics remapped to the node's relative names:
 ros2 run fiducials_detector fiducials_detector --ros-args -r image_raw:=/my_camera/image_raw -p tracking_mode:=true
 ```
 
-
-### Debug Mode
-
-TODO: Add screenshot
-
-
 ### Package Layout
 
 ```
@@ -97,5 +95,23 @@ fiducials_detector/
 └── utils/
     ├── detection_preview_window.py      # debug preview window
     ├── fiducials_detector_debugger.py   # detection accuracy output
+    ├── mono16_scaling.py                # scales 16-bit frames (e.g. infrared) to 8 bit
     └── serialized_image.py              # reads frames straight from serialized messages
+```
+
+---
+
+#### Recommended Settings for fast marker tracking with IR frames:
+
+Tested with a Flir Blackfly S (BFS-U3-23S3M-C) Mono at 160fps 1920x1200.
+Camera 1.5 meter above the surface. Marker width: 20mm
+
+```
+tracking_mode: true
+tracking_window_size_px: 160
+full_scan_rate_hz: 5.0
+adaptive_thresh_win_size_min_px: 13
+adaptive_thresh_win_size_max_px: 13
+bit_sample_px_per_cell: 8
+bit_ignored_margin_per_cell: 0.3
 ```
