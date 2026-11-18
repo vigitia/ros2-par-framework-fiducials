@@ -17,15 +17,15 @@ class DetectionPreviewWindow:
     def __init__(self):
         self._window_sized = False
 
-    def show_frame_with_markers(self, camera_frame_mono, marker_corners_px, marker_ids):
-        """Show the frame; marker_corners_px and marker_ids as returned by detectMarkers."""
-        # Scaled down before drawing: drawing on and showing a full camera frame costs detection
-        # time; the same preview width also keeps it readable at every camera resolution
+    def show_preview_frame_with_markers(self, camera_frame_mono, marker_corners_px, marker_ids):
+
+        # Scale down the preview frame
         frame_height_px, frame_width_px = camera_frame_mono.shape[:2]
         preview_scale = PREVIEW_WIDTH_PX / frame_width_px
         preview_height_px = round(frame_height_px * preview_scale)
         preview_image_mono = cv2.resize(camera_frame_mono, (PREVIEW_WIDTH_PX, preview_height_px))
-        # In colour, so the marker outlines stand out
+
+        # Convert greyscale frame back to colour, so hat the marker outlines stand out
         preview_image = cv2.cvtColor(preview_image_mono, cv2.COLOR_GRAY2BGR)
         if marker_ids is not None:
             preview_corners_px = []
@@ -34,8 +34,8 @@ class DetectionPreviewWindow:
                 preview_corners_px.append(scaled_corners_px.astype(np.float32))
             aruco.drawDetectedMarkers(preview_image, preview_corners_px, marker_ids)
 
-        # Resizable by dragging, keeping the aspect ratio; no Qt toolbar and status bar, which
-        # would take part of the window size below. Does nothing once the window exists.
+        # Window is resizable by dragging, but keeps the aspect ratio;
+        # no Qt toolbar and status bar, which would take part of the window size below.
         cv2.namedWindow(PREVIEW_WINDOW_NAME,
                         cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL)
         # Qt opens such a window small, whatever the image size: set it to the image's, once, so
@@ -43,6 +43,6 @@ class DetectionPreviewWindow:
         if not self._window_sized:
             cv2.resizeWindow(PREVIEW_WINDOW_NAME, PREVIEW_WIDTH_PX, preview_height_px)
             self._window_sized = True
+
         cv2.imshow(PREVIEW_WINDOW_NAME, preview_image)
-        # Lets the window draw itself; returns after 1 ms instead of waiting for a key
         cv2.waitKey(1)

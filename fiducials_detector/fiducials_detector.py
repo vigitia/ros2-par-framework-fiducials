@@ -1,5 +1,4 @@
-# Available settings added with help of Claude Code.
-# Claude Code added the search in windows around known markers (detect_fiducials_in_windows).
+# Written with the help of Claude Code
 
 import math
 
@@ -9,6 +8,8 @@ import numpy as np
 
 from .utils.detection_preview_window import DetectionPreviewWindow
 from .utils.fiducials_detector_debugger import DetectionAccuracyDebugger
+
+# Available settings added with help of Claude Code.
 
 # Prefixes of the cv2.aruco dictionary constants per marker type, e.g. DICT_4X4_100 or
 # DICT_APRILTAG_36h11
@@ -34,7 +35,7 @@ CORNER_REFINEMENT_METHODS = {
 
 # Written by Claude Code
 def _is_marker_in_list(candidate_marker, markers):
-    """Return True if markers holds one with the same id whose centroid lies within its size."""
+    """Return True if the list "markers" holds one with the same id whose centroid lies within its size."""
     for marker in markers:
         if marker['id'] != candidate_marker['id']:
             continue
@@ -65,7 +66,7 @@ def _create_marker_dict(marker_id, corners_px):
     }
 
 
-# Co-authored by Claude Code: reduced to the angle of the top edge
+# Co-authored by Claude Code
 def _compute_marker_angle_deg(marker_corners_px):
     """
     Return the angle of the marker's top edge against the image's x axis, in whole degrees.
@@ -146,6 +147,7 @@ class FiducialsDetector:
             raise ValueError(f"Unknown {marker_type} dictionary '{dictionary_name}', valid are "
                              f'{valid_dictionary_names}')
 
+        # Setup aruco dictionary, parameters and detector
         self.aruco_dictionary = aruco.getPredefinedDictionary(dictionary_id)
         corner_refinement_method = CORNER_REFINEMENT_METHODS[corner_refinement]
         self.aruco_detector_parameters = _create_detector_parameters(
@@ -153,15 +155,12 @@ class FiducialsDetector:
             adaptive_thresh_win_size_max_px, bit_sample_px_per_cell, bit_ignored_margin_per_cell)
         self.aruco_detector = aruco.ArucoDetector(self.aruco_dictionary,
                                                   self.aruco_detector_parameters)
-        # For detect_fiducials_in_windows: same settings, but its minimum marker size is rescaled
-        # per window, see _get_window_detector
-        self.window_detector_parameters = _create_detector_parameters(
-            corner_refinement_method, adaptive_thresh_constant, adaptive_thresh_win_size_min_px,
-            adaptive_thresh_win_size_max_px, bit_sample_px_per_cell, bit_ignored_margin_per_cell)
-        self.window_detector = aruco.ArucoDetector(self.aruco_dictionary,
-                                                   self.window_detector_parameters)
+
+        # For detect_fiducials_in_windows, created on its first use, see _get_window_detector
+        self.window_detector = None
         self.window_detector_size_px = None
 
+        # In debug mode, start the Preview Prints and Window
         if self.debug:
             self.detection_accuracy_debugger = DetectionAccuracyDebugger()
             self.detection_preview_window = DetectionPreviewWindow()
@@ -171,39 +170,36 @@ class FiducialsDetector:
         if self.debug:
             self.detection_accuracy_debugger.on_new_frame()
 
-        # Colour frames (OpenCV's BGR order) to greyscale
-        if len(camera_frame.shape) == 3:
-            camera_frame = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2GRAY)
-
         marker_corners_px, marker_ids, _ = self.aruco_detector.detectMarkers(camera_frame)
 
-        fiducials = []
+        markers = []
 
-        # detectMarkers returns None instead of an empty array when it finds no marker
+        # detectMarkers returns None when it finds no markers
         if marker_ids is not None:
             for corners_px, marker_id in zip(marker_corners_px, marker_ids):
                 detected_marker = _create_marker_dict(marker_id[0], corners_px[0])
-                fiducials.append(detected_marker)
+                markers.append(detected_marker)
                 if self.debug:
                     self.detection_accuracy_debugger.on_new_marker(detected_marker['id'])
 
         if self.debug:
-            self.detection_preview_window.show_frame_with_markers(camera_frame, marker_corners_px,
-                                                                  marker_ids)
+            self.detection_preview_window.show_preview_frame_with_markers(camera_frame, marker_corners_px,
+                                                                          marker_ids)
 
-        return fiducials
+        return markers
 
-    # Written by Claude Code
+    # Written with the help of Claude Code
     def detect_fiducials_in_windows(self, camera_frame_mono, search_windows_px) -> list:
         """
         Detect markers only inside the given windows of a greyscale frame.
 
+        Only when `tracking_mode` is set to `True`
         search_windows_px: (left, top, right, bottom) boxes in frame pixels, already clipped to
         the frame. Returns the same marker dicts as detect_fiducials, in frame pixels. A marker
         seen in two overlapping windows is returned once. No debug preview: it would show only
         the windows.
         """
-        fiducials = []
+        markers = []
         frame_size_px = max(camera_frame_mono.shape[:2])
         for left_px, top_px, right_px, bottom_px in search_windows_px:
             window_image = camera_frame_mono[top_px:bottom_px, left_px:right_px]
@@ -217,9 +213,9 @@ class FiducialsDetector:
             for corners_px, marker_id in zip(marker_corners_px, marker_ids):
                 frame_corners_px = corners_px[0] + window_origin_px
                 detected_marker = _create_marker_dict(marker_id[0], frame_corners_px)
-                if not _is_marker_in_list(detected_marker, fiducials):
-                    fiducials.append(detected_marker)
-        return fiducials
+                if not _is_marker_in_list(detected_marker, markers):
+                    markers.append(detected_marker)
+        return markers
 
     # Written by Claude Code
     def _get_window_detector(self, window_size_px, frame_size_px):
@@ -229,12 +225,21 @@ class FiducialsDetector:
         OpenCV sets the smallest marker perimeter relative to the image size. In a small window
         that relative value allows tiny contours, and every speck of sensor noise is then checked
         as a marker candidate, which makes a noisy window several times slower.
+
+        Created on the first call, so an instance that only scans full frames builds no window
+        detector. It starts with the full-frame settings: ArucoDetector keeps its own copy of
+        the parameters, so rescaling it leaves aruco_detector_parameters unchanged.
         """
+        if self.window_detector is None:
+            self.window_detector = aruco.ArucoDetector(self.aruco_dictionary,
+                                                       self.aruco_detector_parameters)
         if window_size_px != self.window_detector_size_px:
             min_perimeter_px = (self.aruco_detector_parameters.minMarkerPerimeterRate
                                 * frame_size_px)
-            self.window_detector_parameters.minMarkerPerimeterRate = (min_perimeter_px
-                                                                      / window_size_px)
-            self.window_detector.setDetectorParameters(self.window_detector_parameters)
+            # getDetectorParameters returns a copy, so the change applies only through
+            # setDetectorParameters
+            window_detector_parameters = self.window_detector.getDetectorParameters()
+            window_detector_parameters.minMarkerPerimeterRate = min_perimeter_px / window_size_px
+            self.window_detector.setDetectorParameters(window_detector_parameters)
             self.window_detector_size_px = window_size_px
         return self.window_detector

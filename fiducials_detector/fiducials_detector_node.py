@@ -22,6 +22,7 @@ from .depth.depth_arrival_monitor import DepthArrivalMonitor
 from .fiducials_detector import FiducialsDetector
 from .tracking.background_full_scanner import BackgroundFullScanner
 from .tracking.marker_tracker import MarkerTracker
+from .utils.mono16_scaling import scale_mono16_to_mono8
 from .utils.serialized_image import read_serialized_image_mono
 
 NODE_NAME = 'fiducials_detector_node'
@@ -43,7 +44,12 @@ FRAME_DEPTH_SYNC_SLOP_SEC = 0.01
 # then says.
 DEPTH_MISSING_TIMEOUT_SEC = 2.0
 DEPTH_CHECK_PERIOD_SEC = 1.0
+
+# Prevent spamming the console with warnings. Limits output of the error log to only once per this interval
 WARNING_THROTTLE_PERIOD_SEC = 5.0
+
+# Single-channel 16-bit frame encodings, e.g. infrared cameras
+MONO16_ENCODINGS = ('mono16', '16UC1')
 
 # REP 118: depth images in 16UC1 are in millimetres, 32FC1 in metres
 M_PER_MM = 0.001
@@ -84,6 +90,10 @@ class FiducialsDetectorNode(Node):
     # The colour camera's intrinsics, set once calibrated ones arrive (only with use_depth)
     camera_matrix = None
     distortion_coefficients = None
+
+    # For tracking_mode
+    marker_tracker = None
+    background_full_scanner = None
 
     def __init__(self):
         super().__init__(node_name=NODE_NAME)
@@ -199,7 +209,7 @@ class FiducialsDetectorNode(Node):
 
     # Written with the help of Claude Code
     def _init_tracking_mode(self):
-        """With tracking_mode, a marker tracker and the background full scanner."""
+        """With tracking_mode, init the marker tracker and the background full scanner."""
 
         # Read parameters for Tracking Mode
         search_window_size_px = self.get_parameter(PARAMETER_TRACKING_WINDOW_SIZE_PX).value
@@ -276,10 +286,10 @@ class FiducialsDetectorNode(Node):
             callback=self._on_camera_info_received,
             qos_profile=FRAME_QOS)
 
-    # Written by Claude Code
+    # Written with the help of Claude Code
     def _on_camera_info_received(self, camera_info_msg):
-        # Stays subscribed, as ROS 2 camera consumers do: intrinsics stored with set_camera_info
-        # while the camera runs take effect with the next message.
+        # intrinsics stored with set_camera_info while the camera runs take effect with the next message.
+
         # Uncalibrated, the camera matrix is all zeros: skipped, the last valid intrinsics stay
         if camera_info_msg.k[0] == 0.0:
             return
@@ -287,6 +297,8 @@ class FiducialsDetectorNode(Node):
         if self.camera_matrix is None:
             self.get_logger().info(f'Calibrated camera info received on '
                                    f'{TOPIC_NAME_CAMERA_INFO}, corners_3d are filled from now on')
+
+        # Save new matrix and distortion coefficients in class variables
         self.camera_matrix = np.reshape(camera_info_msg.k, (3, 3))
         self.distortion_coefficients = np.array(camera_info_msg.d)
 
@@ -334,16 +346,15 @@ class FiducialsDetectorNode(Node):
         frame_header.stamp.nanosec = stamp_nanosec
         self._detect_and_publish_fiducials(frame_header, frame_mono)
 
-    # Co-authored by Claude Code: one method per step
+    # Co-authored by Claude Code
     def _detect_and_publish_fiducials_in_frame_msg(self, frame_msg, depth_image_m=None):
-        """Detect the markers in a raw or compressed frame, with depth (metres) for corners_3d."""
+        """Detect the markers in a raw or compressed frame, with optional depth (metres) for corners_3d."""
         frame_mono = self._decode_frame_mono(frame_msg)
         if frame_mono is None:
             return
         self._detect_and_publish_fiducials(frame_msg.header, frame_mono, depth_image_m)
 
-    # Co-authored by Claude Code: one shared path for frame messages and frames read from their
-    # serialized message
+    # Co-authored by Claude Code:
     def _detect_and_publish_fiducials(self, frame_header, frame_mono, depth_image_m=None):
         """Detect the markers in a greyscale frame and publish them with the frame's header."""
         if depth_image_m is not None:
@@ -379,10 +390,16 @@ class FiducialsDetectorNode(Node):
         self.marker_tracker.update_from_window_detections(fiducials, frame_time_sec)
         return fiducials
 
-    # Written by Claude Code
+    # Written with the help of Claude Code
     def _decode_frame_mono(self, frame_msg):
         """Return the frame in greyscale, or None if a compressed frame can't be decoded."""
+
         if not isinstance(frame_msg, CompressedImage):
+            # 16-bit greyscale (e.g. infrared) is scaled by its own range, as cv_bridge's fixed
+            # conversion would leave it almost black
+            if frame_msg.encoding in MONO16_ENCODINGS:
+                frame_mono16 = self.cv_bridge.imgmsg_to_cv2(frame_msg)
+                return scale_mono16_to_mono8(frame_mono16)
             # Asking cv_bridge for mono8 converts bgr8, rgb8 and mono8 frames correctly,
             # whichever encoding the camera node is set to
             return self.cv_bridge.imgmsg_to_cv2(frame_msg, desired_encoding='mono8')
@@ -423,12 +440,10 @@ class FiducialsDetectorNode(Node):
                 detected_marker['corners'], depth_image_m, self.camera_matrix,
                 self.distortion_coefficients)
 
-    # Co-authored by Claude Code: names, corners unpacked
     @staticmethod
     def _create_fiducials_list_msg(detected_markers, frame_header):
         fiducials_list_msg = FiducialsList(header=frame_header)
         for detected_marker in detected_markers:
-            # Python floats: the message fields do not accept NumPy's float32
             corners_px = detected_marker['corners'].tolist()
             centroid_px = detected_marker['centroid'].tolist()
             fiducial_msg = Fiducial(id=int(detected_marker['id']),
@@ -437,17 +452,16 @@ class FiducialsDetectorNode(Node):
                                     x1=corners_px[1][0], y1=corners_px[1][1],
                                     x2=corners_px[2][0], y2=corners_px[2][1],
                                     x3=corners_px[3][0], y3=corners_px[3][1],
-                                    x_centroid=centroid_px[0],
-                                    y_centroid=centroid_px[1])
-            # Only with use_depth and enough depth on the marker
+                                    x_centroid=centroid_px[0], y_centroid=centroid_px[1])
+            # Add depth data if available
             if detected_marker.get('corners_3d') is not None:
                 fiducial_msg.corners_3d = [Point(x=float(x_m), y=float(y_m), z=float(z_m))
                                            for x_m, y_m, z_m in detected_marker['corners_3d']]
             fiducials_list_msg.fiducials.append(fiducial_msg)
         return fiducials_list_msg
 
-    # Written by Claude Code
     def destroy_node(self):
+        # End the Background scanner first because it runs in a separate thread
         if self.background_full_scanner is not None:
             self.background_full_scanner.stop()
         super().destroy_node()
