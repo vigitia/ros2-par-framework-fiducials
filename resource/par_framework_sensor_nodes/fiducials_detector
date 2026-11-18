@@ -1,0 +1,9 @@
+# Written with the help of Claude Code
+# This package's entry in the ament index registers the node as a sensor processing node of the
+# ros2-par-framework,
+
+display_name: Fiducials Detector
+description: Finds markers (ArUco, Apriltags) in the camera image and publishes their corners in camera pixels. Optional depth.
+
+# Sensor nodes whose output this node reads; started along with it
+required_sensor_nodes: []
