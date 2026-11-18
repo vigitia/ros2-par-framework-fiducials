@@ -6,7 +6,7 @@
   <version>0.1.0</version>
   <description>TODO: Package description</description>
   <maintainer email="vitus.maierhoefer@gmail.com">vitus</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
