@@ -896,3 +896,16 @@ split into named single steps. Results are unchanged: old and new code returned 
   per computed result matches the package's layout.
 - Rejected: `max(candidate_poses, key=...)` for the pose selection, in favour of an explicit
   list of agreements and `np.argmax`, which avoids a lambda.
+
+## 2026-11-20: `extras_require={'test': ['pytest']}` instead of `tests_require`
+
+### What changed
+
+`setup.py` declares pytest as the `test` extra instead of `tests_require=['pytest']`.
+
+### Why / alternatives
+
+Current setuptools no longer knows `tests_require`: every build printed "Unknown distribution option:
+'tests_require'", and `colcon test` reads the test extra to decide whether to run pytest, otherwise it falls back to
+unittest and finds no tests. The other framework packages (e.g. `gesture_detector`, `page_locator`) declare it the
+same way. Removing the line without a replacement was rejected, because colcon would still not use pytest.

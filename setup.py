@@ -20,7 +20,9 @@ setup(
     maintainer_email='vitus.maierhoefer@gmail.com',
     description='TODO: Package description',
     license='TODO: License declaration',
-    tests_require=['pytest'],
+    # Co-authored by Claude Code: the test extra makes colcon test run pytest; without it,
+    # colcon falls back to unittest and finds no tests
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [
             'fiducials_detector = fiducials_detector.fiducials_detector_node:main'
